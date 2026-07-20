@@ -66,14 +66,25 @@ extremes = (d == 5) + (|s| == 3) + (dy == -1 || dy == 5)
 to that predicate the mod will wall the player in and skin jumps to 150 — `RoomGeometryTest`'s
 `onlyTheBackPlaneCountsOnTheDepthAxis` exists to catch exactly that.
 
-A **spine segment** is a different animal: a plain box, `SpineGeometry.DEFAULT_LENGTH` (7) long by 3
-wide by 5 tall, **no recesses and no framing**. It is the interior height only — `dy in [0,4]` — and
-that is load-bearing: a room's floor recess is carved one *below* the walking surface so a finished
-floor can be laid into it by hand and end level with the corridor. Carving the corridor floor too
-would drop the hallway a block and break the flush join. `SpineGeometryTest.itNeverCarvesTheFloorYouAreStandingOn`
-guards it.
+A **spine segment** is a plain box: `SpineGeometry.DEFAULT_LENGTH` (7) long by 3 wide, and 7 tall
+finished or 5 tall roughed. Floor and ceiling get the same recess treatment a room's do — both are
+replaced eventually — but there are **no side recesses and no framing**, because the corridor's sides
+are where rooms open.
 
-Job sizes: `room` 250 carved / 44 framing; `room both` 500 / 88; `spine` 105 / 0.
+### Rough versus finish
+
+`MallSpec.finishRecesses` is a per-job switch, defaulting from `Config.carveFinishRecesses` and
+overridable by the `rough` / `finish` command literals.
+
+- **finish** — the finished volume plus the 1-block recesses. The player ends one block lower.
+- **rough** — the finished volume only. The floor is untouched, so the player stays level.
+
+**Rough is always a strict subset of finish** (`RoomGeometryTest.roughIsASubsetOfFinish`,
+`SpineGeometryTest.roughIsAlwaysASubsetOfFinish`). Combined with the world-independent anchor and
+`retireAlreadyCarved`, that is what makes "rough a run out now, re-run the same jobs later" cut
+exactly the recesses and nothing else. Do not break either half of that.
+
+Job sizes: `room` 250/44, `room rough` 125/44, `room both` 500/88, `spine` 147/0, `spine rough` 105/0.
 
 ---
 
@@ -142,10 +153,10 @@ every movement update
 | [GridPos.java](src/main/java/com/jus144tice/mallroombuilder/core/GridPos.java) | record `(x,y,z)`; `plus`, `minus`, `offset(Facing,int)`, `lateral`, `withY`, `at(Facing,along,side,y)` | Minecraft-free block position. `at` is the facing-relative constructor everything else describes cells with. |
 | [Facing.java](src/main/java/com/jus144tice/mallroombuilder/core/Facing.java) | `SOUTH,WEST,NORTH,EAST` (**declaration order is MC's 2D data values**), `fromYaw`, `stepX/stepZ`, `left()`, `opposite()` | `fromYaw` reproduces `Direction.fromYRot` via `Math.floorMod`, so unnormalised player yaws work. Names match `net.minecraft.core.Direction` for name-based conversion. |
 | [RoomPlacement.java](src/main/java/com/jus144tice/mallroombuilder/core/RoomPlacement.java) | record `(openingCentre, depth)`; `cell(d,s,y)`, `depthOf`, `sideOf`, `floorY`, `floorPlateY`, `ceilingPlateY` | One room's position and orientation. A room is *directed* — open at the front, walled at the back — so everything is d/s/dy relative to the opening. |
-| [MallSpec.java](src/main/java/com/jus144tice/mallroombuilder/core/MallSpec.java) | record `(kind, bothSides, hallDepth, spineLength)`; `Kind` (ROOM/SPINE); factories `room(...)`, `spine(...)`; `roomCount()`, `oppositeOpeningOffset()` | What one job carves. `oppositeOpeningOffset` is `hallDepth + 1`: the corridor plus the two wall planes the openings occupy. |
+| [MallSpec.java](src/main/java/com/jus144tice/mallroombuilder/core/MallSpec.java) | record `(kind, bothSides, hallDepth, spineLength, **finishRecesses**)`; `Kind` (ROOM/SPINE); factories `room(...)`, `spine(...)`; `roomCount()`, `oppositeOpeningOffset()`, `modeName()` | What one job carves. `oppositeOpeningOffset` is `hallDepth + 1`: the corridor plus the two wall planes the openings occupy. |
 | [MallAnchor.java](src/main/java/com/jus144tice/mallroombuilder/core/MallAnchor.java) | **`START_OFFSET`** (1); record `(playerFeet, facing)`; `of`, `facedRoom()`, `oppositeRoom(spec)`, **`spineStart()`**, `floorPlateY`, `ceilingPlateY`, `cell`, `alongOf`, `sideOf` | Where the job goes, from position and facing alone. `facedRoom()` and `spineStart()` return the same frame — both begin at the next block ahead. |
-| [SpineGeometry.java](src/main/java/com/jus144tice/mallroombuilder/core/SpineGeometry.java) | `DEFAULT_LENGTH` (7), `RADIUS` (1), `HEIGHT` (5); `carve(start, length)`, `cellCount(length)` | A plain corridor box. No recesses, no framing, and interior height only so the corridor floor stays put. |
-| [RoomGeometry.java](src/main/java/com/jus144tice/mallroombuilder/core/RoomGeometry.java) | `INTERIOR_SIZE` (5), `INTERIOR_RADIUS` (2), `ENVELOPE_RADIUS` (3), `BACK_PLATE_DEPTH` (5); **`extremeCount(d,s,dy)`**; `interior`, `visibleSkin`, `framing`, `envelope` | **The whole framing rule is `extremeCount`.** `visibleSkin` is a legacy name for the five face recesses — they are carved, not skinned. |
+| [SpineGeometry.java](src/main/java/com/jus144tice/mallroombuilder/core/SpineGeometry.java) | `DEFAULT_LENGTH` (7), `RADIUS` (1), `WIDTH` (3), `INTERIOR_HEIGHT` (5), `ENVELOPE_HEIGHT` (7); `interior`, `recesses`, **`carve(start, length, includeRecesses)`**, `cellCount(length, includeRecesses)` | A plain corridor box: floor and ceiling recesses like a room's, but no side recesses and no framing. |
+| [RoomGeometry.java](src/main/java/com/jus144tice/mallroombuilder/core/RoomGeometry.java) | `INTERIOR_SIZE` (5), `INTERIOR_RADIUS` (2), `ENVELOPE_RADIUS` (3), `BACK_PLATE_DEPTH` (5); **`extremeCount(d,s,dy)`**; `interior`, `faceRecesses`, `framing`, `envelope`, **`carve(room, includeRecesses)`** | **The whole framing rule is `extremeCount`.** `carve` is the rough/finish switch: interior alone, or interior plus the five face recesses. |
 | [MallLayout.java](src/main/java/com/jus144tice/mallroombuilder/core/MallLayout.java) | ctor (branches on `spec.kind()`); `carve()`, `framing()`, `counts()`, **`mineOrder()`**; private `addRoom`, `addSpine`, `keyFor`, record `SortKey` | **The composer and single source of truth.** Two disjoint sets: cells to mine, and cells to protect and backfill. `keyFor` encodes the ordering; units are faced room 0, opposite room 1 (a spine job is a single unit 0). |
 | [MallCounts.java](src/main/java/com/jus144tice/mallroombuilder/core/MallCounts.java) | record `(carvedCount, framingCount)`; `minedTotal()`, `envelopeTotal()` | `minedTotal == carvedCount` because nothing is ever placed. |
 | [QueueCursor.java](src/main/java/com/jus144tice/mallroombuilder/core/QueueCursor.java) | `select`, `peek`, `complete`, `defer`, `requeue`, `sweep`, `outstanding`, `done/remaining/total`, `sweepsUsed`, `deferredCount` | Ordered work list with a deferral tail and a bounded sweep counter. Completion is always the caller's call against the world. |
@@ -178,14 +189,14 @@ every movement update
 
 ## Tests
 
-JUnit 5 on the moddev `unitTest` harness. `.\gradlew.bat test`. 120 tests; the geometry is where the
+JUnit 5 on the moddev `unitTest` harness. `.\gradlew.bat test`. 137 tests; the geometry is where the
 value is.
 
 | File | Covers |
 |---|---|
 | [RoomGeometryTest.java](src/test/java/com/jus144tice/mallroombuilder/core/RoomGeometryTest.java) | **125 interior / 125 recess / 44 framing / 294 envelope / 250 carved**; the partition is exact; **`onlyTheBackPlaneCountsOnTheDepthAxis`** and `theOpeningPlaneHasNoBackWall` guard the open front; each slice carves 45 of 49 leaving 4 corners |
-| [SpineGeometryTest.java](src/test/java/com/jus144tice/mallroombuilder/core/SpineGeometryTest.java) | **105 blocks at 7×3×5**; starts at the block in front, never includes the player's own; **`itNeverCarvesTheFloorYouAreStandingOn`**; **`consecutiveSegmentsTileWithoutGapOrOverlap`** |
-| [MallLayoutTest.java](src/test/java/com/jus144tice/mallroombuilder/core/MallLayoutTest.java) | room **250 / 44**; `both` **500 / 88**; spine **105 / 0**; the two rooms face each other 4 apart and never overlap; carve ∩ framing = ∅; **`theSameStandingSpotAlwaysDescribesTheSameVolume`** (the resume guarantee) |
+| [SpineGeometryTest.java](src/test/java/com/jus144tice/mallroombuilder/core/SpineGeometryTest.java) | **147 finished / 105 rough**; starts at the block in front, never includes the player's own; `aFinishedSegmentSpansTheSameHeightAsARoom`; **`roughIsAlwaysASubsetOfFinish`**; **`consecutiveSegmentsTileWithoutGapOrOverlap`** |
+| [MallLayoutTest.java](src/test/java/com/jus144tice/mallroombuilder/core/MallLayoutTest.java) | room **250 / 44**, rough **125 / 44**; `both` **500 / 88**; spine **147 / 0**, rough **105 / 0**; the two rooms face each other 4 apart and never overlap; carve ∩ framing = ∅; **`theSameStandingSpotAlwaysDescribesTheSameVolume`** (the resume guarantee) |
 | [MineOrderTest.java](src/test/java/com/jus144tice/mallroombuilder/core/MineOrderTest.java) | permutation of the carve set; never queues framing; **every floor cell follows every non-floor cell**; **`aRoomIsCarvedFrontToBack`** and `aSpineSegmentIsCarvedFrontToBackToo` (the anti-deadlock assertions); ceiling leads each slice, body top-down; one room at a time |
 | [MallAnchorTest.java](src/test/java/com/jus144tice/mallroombuilder/core/MallAnchorTest.java) | **`aJobAlwaysStartsAtTheVeryNextBlock`**; room and spine share a start; **`nothingIsReadFromTheWorldSoTheGeometryIsReproducible`**; opposite room mirrors 4 back; `alongOf`/`sideOf` invert `cell` for every facing |
 | [FacingTest.java](src/test/java/com/jus144tice/mallroombuilder/core/FacingTest.java) | `fromYaw` against the vanilla formula for every degree in ±1080 |
@@ -219,9 +230,9 @@ README, and keep it honest.
   `currentTarget == null` guard in `tickCarving` is what enforces it.
 - **Throughput is floored at ~5 ticks per block** by `destroyDelay`. A 397-block job takes minutes.
   That is why the HUD exists.
-- **The player finishes one block lower than they started** on a `room` job, standing in the floor
-  recess with framing ledges along the wall bases. That is correct and matches the hand-built rooms —
-  not a bug. A `spine` job leaves them level, because a corridor has no floor recess.
+- **The player finishes one block lower than they started** on any `finish` job, standing in the
+  floor recess. That is correct and matches the hand-built rooms — not a bug. A `rough` job leaves
+  them level, because it never cuts the floor.
 - **A partial job is finished by re-running it from the same block.** That only holds because the
   anchor is world-independent; `MallLayoutTest.theSameStandingSpotAlwaysDescribesTheSameVolume` is
   the assertion protecting it.

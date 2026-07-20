@@ -31,6 +31,7 @@ class ConfigTest {
         assertEquals(List.of("enabled"), Config.ENABLED.getPath());
         assertEquals(List.of("hallDepth"), Config.HALL_DEPTH.getPath());
         assertEquals(List.of("spineLength"), Config.SPINE_LENGTH.getPath());
+        assertEquals(List.of("carveFinishRecesses"), Config.CARVE_FINISH_RECESSES.getPath());
         assertEquals(List.of("autoWalkEnabled"), Config.AUTO_WALK_ENABLED.getPath());
         assertEquals(List.of("abortOnPlayerInput"), Config.ABORT_ON_PLAYER_INPUT.getPath());
         assertEquals(List.of("autoBackfillFraming"), Config.AUTO_BACKFILL_FRAMING.getPath());
@@ -42,6 +43,7 @@ class ConfigTest {
         assertEquals(true, Config.ENABLED.getDefault());
         assertEquals(3, Config.HALL_DEPTH.getDefault());
         assertEquals(7, Config.SPINE_LENGTH.getDefault());
+        assertEquals(true, Config.CARVE_FINISH_RECESSES.getDefault(), "jobs cut the finishing recesses by default");
         assertEquals(1.0, Config.AUTO_WALK_SPEED.getDefault());
         assertEquals(1.0, Config.LOOK_ABORT_DEGREES.getDefault());
         assertEquals(60, Config.ARM_GRACE_TICKS.getDefault());
@@ -67,6 +69,7 @@ class ConfigTest {
         assertTrue(Config.enabled());
         assertEquals(3, Config.hallDepth());
         assertEquals(7, Config.spineLength());
+        assertTrue(Config.carveFinishRecesses());
         assertTrue(Config.autoWalkEnabled());
         assertEquals(1.0, Config.autoWalkSpeed());
         assertTrue(Config.autoWalkJump());

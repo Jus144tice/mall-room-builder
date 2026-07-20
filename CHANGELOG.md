@@ -4,6 +4,29 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-07-20
+
+### Added
+
+- **`rough` / `finish` on every job.** `finish` (the default) cuts the finished volume *and* the
+  1-block recesses that hold the decorative course; `rough` cuts only the finished volume, leaving
+  the floor untouched so you stay at the level you started at.
+
+  Rough is for when you don't have the decorative blocks on you. Because the anchor is deterministic
+  and already-carved cells retire on sight, and **rough is a strict subset of finish**, you can rough
+  a whole run out now and re-run the same jobs from the same spots later — only the recesses get cut.
+- `carveFinishRecesses` config key (default `true`) sets which mode the bare command uses; the
+  literals override it either way.
+
+### Changed
+
+- **A spine segment is now 7 tall when finished**, not 5. Its floor and ceiling are replaced too, so
+  both get a recess exactly as a room's do, and a finished segment drops you a block just like a
+  room. `spine` is now 147 blocks, `spine rough` 105. Still no side recesses and no framing — the
+  corridor's sides are where rooms open.
+- `RoomGeometry.visibleSkin` renamed to `faceRecesses`; the "skin" wording was left over from when
+  the mod placed blocks.
+
 ## [0.3.0] — 2026-07-20
 
 ### Added

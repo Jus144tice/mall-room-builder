@@ -134,8 +134,8 @@ public final class JobEngine {
 
         HotbarSelector.remember(player);
         String what = spec.kind() == MallSpec.Kind.SPINE
-                ? "spine segment " + spec.spineLength() + " long"
-                : spec.roomCount() + " room(s)";
+                ? "spine segment " + spec.spineLength() + " long (" + spec.modeName() + ")"
+                : spec.roomCount() + " room(s) (" + spec.modeName() + ")";
         String framingNote = candidate.counts().framingCount() > 0
                 ? ", " + candidate.counts().framingCount() + " framing left standing"
                 : "";

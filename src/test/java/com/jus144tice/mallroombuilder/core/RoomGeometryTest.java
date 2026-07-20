@@ -34,7 +34,7 @@ class RoomGeometryTest {
         @Test
         void theFiveFaceRecessesAre125() {
             // back 25 + two pillars 50 + ceiling 25 + floor 25
-            assertEquals(125, RoomGeometry.visibleSkin(ROOM).size());
+            assertEquals(125, RoomGeometry.faceRecesses(ROOM).size());
         }
 
         @Test
@@ -53,9 +53,51 @@ class RoomGeometryTest {
         @Test
         void carvedTotalIs250() {
             int carved = RoomGeometry.interior(ROOM).size()
-                    + RoomGeometry.visibleSkin(ROOM).size();
+                    + RoomGeometry.faceRecesses(ROOM).size();
             assertEquals(250, carved);
             assertEquals(294, carved + RoomGeometry.framing(ROOM).size());
+        }
+    }
+
+    @Nested
+    @DisplayName("rough versus finish")
+    class RoughVersusFinish {
+
+        @Test
+        void aFinishJobCarves250AndARoughJobCarves125() {
+            assertEquals(250, RoomGeometry.carve(ROOM, true).size());
+            assertEquals(125, RoomGeometry.carve(ROOM, false).size());
+        }
+
+        @Test
+        void roughIsExactlyTheInterior() {
+            assertEquals(RoomGeometry.interior(ROOM), RoomGeometry.carve(ROOM, false));
+        }
+
+        @Test
+        void theDifferenceIsExactlyTheFaceRecesses() {
+            Set<GridPos> extra = new HashSet<>(RoomGeometry.carve(ROOM, true));
+            extra.removeAll(RoomGeometry.carve(ROOM, false));
+            assertEquals(RoomGeometry.faceRecesses(ROOM), extra);
+        }
+
+        @Test
+        void roughIsASubsetOfFinish() {
+            // Which is what lets a room be roughed out now and finished by re-running it later.
+            assertTrue(RoomGeometry.carve(ROOM, true).containsAll(RoomGeometry.carve(ROOM, false)));
+        }
+
+        @Test
+        void aRoughJobNeverTouchesTheFloorYouStandOn() {
+            assertTrue(RoomGeometry.carve(ROOM, false).stream().noneMatch(p -> p.y() == ROOM.floorPlateY()));
+            assertTrue(RoomGeometry.carve(ROOM, true).stream().anyMatch(p -> p.y() == ROOM.floorPlateY()));
+        }
+
+        @Test
+        void neitherModeEverTouchesFraming() {
+            for (boolean finish : new boolean[] {false, true}) {
+                assertTrue(RoomGeometry.carve(ROOM, finish).stream().noneMatch(RoomGeometry.framing(ROOM)::contains));
+            }
         }
     }
 
@@ -85,8 +127,8 @@ class RoomGeometryTest {
         @Test
         void thePillarsReachTheOpeningPlane() {
             // The visible pillar framing each opening starts at depth 0.
-            assertTrue(RoomGeometry.visibleSkin(ROOM).contains(ROOM.cell(0, 3, ROOM.floorY())));
-            assertTrue(RoomGeometry.visibleSkin(ROOM).contains(ROOM.cell(0, -3, ROOM.floorY())));
+            assertTrue(RoomGeometry.faceRecesses(ROOM).contains(ROOM.cell(0, 3, ROOM.floorY())));
+            assertTrue(RoomGeometry.faceRecesses(ROOM).contains(ROOM.cell(0, -3, ROOM.floorY())));
         }
     }
 
@@ -98,28 +140,28 @@ class RoomGeometryTest {
         void interiorRecessesAndFramingTileTheEnvelope() {
             Set<GridPos> union = new HashSet<>();
             union.addAll(RoomGeometry.interior(ROOM));
-            union.addAll(RoomGeometry.visibleSkin(ROOM));
+            union.addAll(RoomGeometry.faceRecesses(ROOM));
             union.addAll(RoomGeometry.framing(ROOM));
 
             assertEquals(RoomGeometry.envelope(ROOM), union);
             assertEquals(
                     294,
                     RoomGeometry.interior(ROOM).size()
-                            + RoomGeometry.visibleSkin(ROOM).size()
+                            + RoomGeometry.faceRecesses(ROOM).size()
                             + RoomGeometry.framing(ROOM).size());
         }
 
         @Test
         void interiorAndRecessesAreDisjoint() {
             Set<GridPos> both = new HashSet<>(RoomGeometry.interior(ROOM));
-            both.retainAll(RoomGeometry.visibleSkin(ROOM));
+            both.retainAll(RoomGeometry.faceRecesses(ROOM));
             assertTrue(both.isEmpty());
         }
 
         @Test
         void framingIsNeverAlsoCarved() {
             Set<GridPos> carved = new HashSet<>(RoomGeometry.interior(ROOM));
-            carved.addAll(RoomGeometry.visibleSkin(ROOM));
+            carved.addAll(RoomGeometry.faceRecesses(ROOM));
             assertTrue(RoomGeometry.framing(ROOM).stream().noneMatch(carved::contains));
         }
     }
@@ -169,7 +211,7 @@ class RoomGeometryTest {
 
         @Test
         void theRecessesReachOneBelowAndFiveAbove() {
-            Set<GridPos> recesses = RoomGeometry.visibleSkin(ROOM);
+            Set<GridPos> recesses = RoomGeometry.faceRecesses(ROOM);
             assertTrue(recesses.stream().anyMatch(p -> p.y() == ROOM.floorPlateY()));
             assertTrue(recesses.stream().anyMatch(p -> p.y() == ROOM.ceilingPlateY()));
             assertEquals(63, ROOM.floorPlateY());
@@ -192,7 +234,7 @@ class RoomGeometryTest {
             for (Facing f : Facing.values()) {
                 RoomPlacement room = new RoomPlacement(new GridPos(-4000, -59, 7), f);
                 assertEquals(125, RoomGeometry.interior(room).size(), "facing " + f);
-                assertEquals(125, RoomGeometry.visibleSkin(room).size(), "facing " + f);
+                assertEquals(125, RoomGeometry.faceRecesses(room).size(), "facing " + f);
                 assertEquals(44, RoomGeometry.framing(room).size(), "facing " + f);
             }
         }

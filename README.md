@@ -55,28 +55,43 @@ CROSS-SECTION                              CARVE, in facing-relative terms
 Note the depth axis has only **one** extreme. The front isn't a wall, it's a hole — that's what makes
 a room five faces rather than six, and getting it wrong would wall you in.
 
+A **spine segment** gets the same treatment on floor and ceiling — both are replaced eventually, so
+both get a recess — but no side recesses and **no framing**, since its sides are where rooms open. So
+it's a plain box, 3 wide and 7 tall finished (or 5 tall roughed).
+
 | Job | Carved | Framing left |
 |---|---|---|
 | `room` | 250 | 44 |
-| `room both` — two facing rooms | 500 | 88 |
-| `spine` — a 7 × 3 × 5 corridor segment | 105 | 0 |
+| `room rough` | 125 | 44 |
+| `room both` | 500 | 88 |
+| `room both rough` | 250 | 88 |
+| `spine` (7 long) | 147 | 0 |
+| `spine rough` | 105 | 0 |
 
-A **spine segment is a plain box** — no recesses, no framing. It's also the interior height only, so
-its floor stays where you're standing. That's deliberate: a room's floor recess is carved one *below*
-the walking surface so you can lay a finished floor into it by hand and end up level with the
-corridor. Carving the corridor floor too would drop the hallway a block and break the flush join.
+### Rough vs finish
+
+Every job takes an optional `rough` or `finish`:
+
+- **`finish`** (the default) cuts the finished volume *and* the 1-block recesses that hold the
+  decorative course. You end **one block lower**, standing in the floor recess.
+- **`rough`** cuts only the finished volume. The floor and ceiling stay put, so you **stay at the
+  level you started at**.
+
+Rough is for when you don't have the decorative blocks on you. Because the anchor is deterministic
+and already-carved cells retire on sight, you can **rough a whole run out now, then walk back later
+and re-run the same jobs from the same spots** — and only the recesses get cut.
 
 ## Usage
 
 ```
-/mallroom room  [both]          carve a room off the spine
-/mallroom spine [length]        carve the next segment of corridor (default 7 long)
+/mallroom room  [both]   [rough|finish]     carve a room off the spine
+/mallroom spine [length] [rough|finish]     carve the next segment of corridor
 
-/mallroom preview room  [both]  counts only — no side effects
-/mallroom preview spine [length]
+/mallroom preview room  [both]   [rough|finish]     counts only — no side effects
+/mallroom preview spine [length] [rough|finish]
 
-/mallroom status                current progress
-/mallroom stop                  abort cleanly
+/mallroom status                            current progress
+/mallroom stop                              abort cleanly
 ```
 
 **One rule covers both jobs: stand facing the way you want to build, and the block directly in front
@@ -149,6 +164,7 @@ lands at `build/libs/mallroombuilder-<version>.jar`.
 |---|---|---|
 | `hallDepth` | `3` | corridor width; sets how far apart two facing rooms sit |
 | `spineLength` | `7` | default length of `/mallroom spine` |
+| `carveFinishRecesses` | `true` | whether jobs cut the recesses by default; `rough`/`finish` override it |
 | `autoWalkEnabled` | `true` | off = only mine what's already in reach, then stop |
 | `abortOnPlayerInput` | `true` | the dead-man's switch. Turning it off is unsupported |
 | `lookAbortDegrees` | `1.0` | mouse-look sensitivity of the switch |
@@ -158,14 +174,16 @@ lands at `build/libs/mallroombuilder-<version>.jar`.
 
 ## Verification status
 
-The geometry is covered by **120 unit tests** (`./gradlew test`) — every count above is asserted,
+The geometry is covered by **137 unit tests** (`./gradlew test`) — every count above is asserted,
 along with the ordering invariants that keep a job from deadlocking on an unreachable ceiling or
 digging the floor out from under you. The mod is confirmed to load cleanly in a dev client.
 
 **The in-game behaviour has not been played through yet.** If you're the first to run it:
 
 - [ ] `/mallroom preview room` and `preview spine` print sane counts and the right direction
-- [ ] `spine`: 105 mined, box lands exactly where you expected, next segment tiles onto it with no gap
+- [ ] `spine rough`: 105 mined, box lands where expected, you stay at the same level
+- [ ] `spine` (finish): 147 mined, 7 tall, you end one block lower; next segment tiles on with no gap
+- [ ] **Rough then finish**: `spine rough`, walk back, `spine finish` from the same block → only the recesses get cut
 - [ ] `room`: 250 mined, all drops collected, durability consumed, break animation visible
 - [ ] The finished shape matches a hand-built room — recesses right, corner framing intact
 - [ ] **Resume works**: stop a room half-way, stand in the same block, run it again, it finishes

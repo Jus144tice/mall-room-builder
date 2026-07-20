@@ -31,6 +31,14 @@ public final class Config {
                     "Blocks along the run carved by /mallroom spine with no argument.")
             .defineInRange("spineLength", 7, 1, 64);
 
+    public static final ModConfigSpec.BooleanValue CARVE_FINISH_RECESSES = BUILDER.comment(
+                    "Whether jobs cut the 1-block finishing recesses by default, on top of the",
+                    "finished volume. Override per command with the 'rough' and 'finish' arguments.",
+                    "Rough is useful when you do not have the decorative blocks on you: rough the run",
+                    "out now, then re-run the same jobs from the same spots later and only the",
+                    "recesses get cut.")
+            .define("carveFinishRecesses", true);
+
     // --- Movement -----------------------------------------------------------
 
     public static final ModConfigSpec.BooleanValue AUTO_WALK_ENABLED = BUILDER.comment(
@@ -184,6 +192,10 @@ public final class Config {
 
     public static int spineLength() {
         return safeGet(SPINE_LENGTH, 7);
+    }
+
+    public static boolean carveFinishRecesses() {
+        return safeGet(CARVE_FINISH_RECESSES, true);
     }
 
     public static boolean autoWalkEnabled() {

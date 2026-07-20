@@ -73,9 +73,28 @@ public final class RoomGeometry {
         return collect(room, 0);
     }
 
-    /** The 125 cells that get skinned: back wall, two pillars, floor and ceiling plates. */
-    public static Set<GridPos> visibleSkin(RoomPlacement room) {
+    /**
+     * The 125 cells of the five 1-block face recesses: back wall, two pillars, ceiling and floor.
+     *
+     * <p>These are what you decorate. Carving them is optional per job — see
+     * {@link #carve(RoomPlacement, boolean)} — so a room can be roughed out now and finished later.</p>
+     */
+    public static Set<GridPos> faceRecesses(RoomPlacement room) {
         return collect(room, 1);
+    }
+
+    /**
+     * Every cell to mine.
+     *
+     * @param includeRecesses cut the five face recesses as well as the interior. False leaves a bare
+     *                        5x5x5 room, to be finished by re-running the job later.
+     */
+    public static Set<GridPos> carve(RoomPlacement room, boolean includeRecesses) {
+        Set<GridPos> out = new LinkedHashSet<>(interior(room));
+        if (includeRecesses) {
+            out.addAll(faceRecesses(room));
+        }
+        return out;
     }
 
     /** The 44 edge and corner cells. Never mined — whatever is already there stays. */

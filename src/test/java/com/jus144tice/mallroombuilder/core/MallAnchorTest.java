@@ -41,7 +41,7 @@ class MallAnchorTest {
     @Test
     void theOppositeRoomMirrorsAcrossTheCorridor() {
         MallAnchor a = MallAnchor.of(0, 64, 0, 0.0f);
-        RoomPlacement opposite = a.oppositeRoom(MallSpec.room(true, 3));
+        RoomPlacement opposite = a.oppositeRoom(MallSpec.room(true, 3, true));
         // 3 lanes of corridor between two wall planes: openings 4 apart.
         assertEquals(new GridPos(0, 64, -3), opposite.openingCentre());
         assertEquals(Facing.NORTH, opposite.depth());
@@ -50,7 +50,7 @@ class MallAnchorTest {
     @Test
     void oppositeOffsetTracksTheCorridorWidth() {
         for (int depth = 1; depth <= 8; depth++) {
-            assertEquals(depth + 1, MallSpec.room(true, depth).oppositeOpeningOffset(), "hallDepth " + depth);
+            assertEquals(depth + 1, MallSpec.room(true, depth, true).oppositeOpeningOffset(), "hallDepth " + depth);
         }
     }
 
@@ -104,14 +104,14 @@ class MallAnchorTest {
 
     @Test
     void roomCountFollowsTheJobKind() {
-        assertEquals(1, MallSpec.room(false, 3).roomCount());
-        assertEquals(2, MallSpec.room(true, 3).roomCount());
-        assertEquals(0, MallSpec.spine(7, 3).roomCount());
+        assertEquals(1, MallSpec.room(false, 3, true).roomCount());
+        assertEquals(2, MallSpec.room(true, 3, true).roomCount());
+        assertEquals(0, MallSpec.spine(7, 3, true).roomCount());
     }
 
     @Test
     void specRejectsDegenerateShapes() {
-        assertThrows(IllegalArgumentException.class, () -> MallSpec.room(false, 0));
-        assertThrows(IllegalArgumentException.class, () -> MallSpec.spine(0, 3));
+        assertThrows(IllegalArgumentException.class, () -> MallSpec.room(false, 0, true));
+        assertThrows(IllegalArgumentException.class, () -> MallSpec.spine(0, 3, true));
     }
 }

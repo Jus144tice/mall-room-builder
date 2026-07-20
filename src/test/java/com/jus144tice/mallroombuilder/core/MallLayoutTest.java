@@ -21,11 +21,16 @@ class MallLayoutTest {
     private static final MallAnchor ANCHOR = MallAnchor.of(0, 64, 0, 0.0f);
 
     private static MallLayout room(boolean bothSides) {
-        return new MallLayout(ANCHOR, MallSpec.room(bothSides, 3));
+        return new MallLayout(ANCHOR, MallSpec.room(bothSides, 3, true));
     }
 
     private static MallLayout spine(int length) {
-        return new MallLayout(ANCHOR, MallSpec.spine(length, 3));
+        return new MallLayout(ANCHOR, MallSpec.spine(length, 3, true));
+    }
+
+    private static MallLayout rough(MallSpec.Kind kind) {
+        return new MallLayout(
+                ANCHOR, kind == MallSpec.Kind.SPINE ? MallSpec.spine(7, 3, false) : MallSpec.room(false, 3, false));
     }
 
     @Nested
@@ -80,7 +85,7 @@ class MallLayoutTest {
 
         @Test
         void theRoomsFaceEachOtherAcrossTheCorridor() {
-            MallSpec spec = MallSpec.room(true, 3);
+            MallSpec spec = MallSpec.room(true, 3, true);
             RoomPlacement faced = ANCHOR.facedRoom();
             RoomPlacement opposite = ANCHOR.oppositeRoom(spec);
 
@@ -92,7 +97,7 @@ class MallLayoutTest {
 
         @Test
         void theTwoRoomsNeverOverlap() {
-            MallSpec spec = MallSpec.room(true, 3);
+            MallSpec spec = MallSpec.room(true, 3, true);
             Set<GridPos> a = new HashSet<>(RoomGeometry.envelope(ANCHOR.facedRoom()));
             assertTrue(RoomGeometry.envelope(ANCHOR.oppositeRoom(spec)).stream().noneMatch(a::contains));
         }
@@ -100,7 +105,7 @@ class MallLayoutTest {
         @Test
         void aWiderCorridorPushesTheOppositeRoomFurtherBack() {
             for (int depth = 1; depth <= 6; depth++) {
-                RoomPlacement opposite = ANCHOR.oppositeRoom(MallSpec.room(true, depth));
+                RoomPlacement opposite = ANCHOR.oppositeRoom(MallSpec.room(true, depth, true));
                 assertEquals(
                         MallAnchor.START_OFFSET - (depth + 1),
                         ANCHOR.alongOf(opposite.openingCentre()),
@@ -116,25 +121,74 @@ class MallLayoutTest {
         @Test
         void isAPlainBoxWithNoFraming() {
             MallLayout l = spine(7);
-            assertEquals(105, l.carve().size());
+            assertEquals(147, l.carve().size());
             assertTrue(l.framing().isEmpty(), "a corridor is a corridor -- nothing is left standing");
-            assertEquals(105, l.counts().minedTotal());
+            assertEquals(147, l.counts().minedTotal());
         }
 
         @Test
         void itCarvesNoRooms() {
-            assertEquals(0, MallSpec.spine(7, 3).roomCount());
+            assertEquals(0, MallSpec.spine(7, 3, true).roomCount());
         }
 
         @Test
         void lengthIsHonoured() {
-            assertEquals(15, spine(1).carve().size());
-            assertEquals(150, spine(10).carve().size());
+            assertEquals(21, spine(1).carve().size());
+            assertEquals(210, spine(10).carve().size());
         }
 
         @Test
-        void itNeverTouchesTheFloorYouAreStandingOn() {
-            assertTrue(spine(7).carve().stream().noneMatch(p -> p.y() == ANCHOR.floorPlateY()));
+        void aFinishedSegmentSpansTheSameHeightAsARoom() {
+            // The corridor floor and ceiling are replaced too, so both get their recess -- which is
+            // what leaves a finished room flush with the corridor beside it.
+            assertTrue(spine(7).carve().stream().anyMatch(p -> p.y() == ANCHOR.floorPlateY()));
+            assertTrue(spine(7).carve().stream().anyMatch(p -> p.y() == ANCHOR.ceilingPlateY()));
+            assertTrue(spine(7).carve().stream().allMatch(p -> p.y() >= 63 && p.y() <= 69));
+        }
+    }
+
+    @Nested
+    @DisplayName("rough versus finish")
+    class RoughVersusFinish {
+
+        @Test
+        void aRoughRoomIsTheInteriorOnly() {
+            assertEquals(125, rough(MallSpec.Kind.ROOM).carve().size());
+            assertEquals(250, room(false).carve().size());
+        }
+
+        @Test
+        void aRoughSegmentIsFiveTallInsteadOfSeven() {
+            assertEquals(105, rough(MallSpec.Kind.SPINE).carve().size());
+            assertEquals(147, spine(7).carve().size());
+        }
+
+        @Test
+        void aRoughJobLeavesYouAtTheLevelYouStartedAt() {
+            for (MallSpec.Kind kind : MallSpec.Kind.values()) {
+                assertTrue(
+                        rough(kind).carve().stream().noneMatch(p -> p.y() == ANCHOR.floorPlateY()),
+                        kind + " rough must not cut the floor");
+            }
+        }
+
+        @Test
+        void roughIsAlwaysASubsetOfFinish() {
+            // Rough a run out now, re-run the same jobs later, and only the recesses get cut.
+            assertTrue(room(false).carve().containsAll(rough(MallSpec.Kind.ROOM).carve()));
+            assertTrue(spine(7).carve().containsAll(rough(MallSpec.Kind.SPINE).carve()));
+        }
+
+        @Test
+        void framingIsProtectedInBothModes() {
+            assertEquals(44, rough(MallSpec.Kind.ROOM).framing().size());
+            assertEquals(44, room(false).framing().size());
+        }
+
+        @Test
+        void modeNameReadsBack() {
+            assertEquals("finish", MallSpec.room(false, 3, true).modeName());
+            assertEquals("rough", MallSpec.room(false, 3, false).modeName());
         }
     }
 
@@ -163,9 +217,13 @@ class MallLayoutTest {
             for (Facing f : Facing.values()) {
                 MallAnchor a = new MallAnchor(new GridPos(-77, 12, 300), f);
                 assertEquals(
-                        500, new MallLayout(a, MallSpec.room(true, 3)).carve().size(), "facing " + f);
+                        500,
+                        new MallLayout(a, MallSpec.room(true, 3, true)).carve().size(),
+                        "facing " + f);
                 assertEquals(
-                        105, new MallLayout(a, MallSpec.spine(7, 3)).carve().size(), "facing " + f);
+                        147,
+                        new MallLayout(a, MallSpec.spine(7, 3, true)).carve().size(),
+                        "facing " + f);
             }
         }
 
@@ -175,8 +233,8 @@ class MallLayoutTest {
             // re-running from the same block re-derives exactly the same job.
             assertEquals(room(false).carve(), room(false).carve());
             assertEquals(
-                    new MallLayout(MallAnchor.of(0, 64, 0, 0.0f), MallSpec.room(false, 3)).carve(),
-                    new MallLayout(MallAnchor.of(0, 64, 0, 12.0f), MallSpec.room(false, 3)).carve(),
+                    new MallLayout(MallAnchor.of(0, 64, 0, 0.0f), MallSpec.room(false, 3, true)).carve(),
+                    new MallLayout(MallAnchor.of(0, 64, 0, 12.0f), MallSpec.room(false, 3, true)).carve(),
                     "any yaw that snaps to the same cardinal gives the same room");
         }
     }

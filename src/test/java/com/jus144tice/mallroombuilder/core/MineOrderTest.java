@@ -24,7 +24,7 @@ class MineOrderTest {
     private static final MallAnchor ANCHOR = MallAnchor.of(0, 64, 0, 0.0f);
 
     private static MallLayout room(boolean bothSides) {
-        return new MallLayout(ANCHOR, MallSpec.room(bothSides, 3));
+        return new MallLayout(ANCHOR, MallSpec.room(bothSides, 3, true));
     }
 
     private static Map<GridPos, Integer> indexOf(List<GridPos> order) {
@@ -104,7 +104,7 @@ class MineOrderTest {
 
         @Test
         void aSpineSegmentIsCarvedFrontToBackToo() {
-            MallLayout l = new MallLayout(ANCHOR, MallSpec.spine(7, 3));
+            MallLayout l = new MallLayout(ANCHOR, MallSpec.spine(7, 3, true));
             assertSliceOrder(l, ANCHOR.spineStart(), 6);
         }
 
@@ -188,8 +188,30 @@ class MineOrderTest {
     }
 
     @Test
-    void aSpineSegmentHasNoFloorPassAtAll() {
-        MallLayout l = new MallLayout(ANCHOR, MallSpec.spine(7, 3));
-        assertTrue(l.mineOrder().stream().noneMatch(p -> p.y() == ANCHOR.floorPlateY()));
+    void aFinishedSpineStillLeavesItsFloorRecessForLast() {
+        MallLayout l = new MallLayout(ANCHOR, MallSpec.spine(7, 3, true));
+        List<GridPos> order = l.mineOrder();
+        int floorY = ANCHOR.floorPlateY();
+
+        int lastNonFloor = -1;
+        int firstFloor = Integer.MAX_VALUE;
+        for (int i = 0; i < order.size(); i++) {
+            if (order.get(i).y() == floorY) {
+                firstFloor = Math.min(firstFloor, i);
+            } else {
+                lastNonFloor = Math.max(lastNonFloor, i);
+            }
+        }
+        assertTrue(firstFloor > lastNonFloor, "the corridor floor drops the player, so it goes last too");
+    }
+
+    @Test
+    void aRoughJobHasNoFloorPassAtAll() {
+        for (MallSpec spec : new MallSpec[] {MallSpec.spine(7, 3, false), MallSpec.room(false, 3, false)}) {
+            MallLayout l = new MallLayout(ANCHOR, spec);
+            assertTrue(
+                    l.mineOrder().stream().noneMatch(p -> p.y() == ANCHOR.floorPlateY()),
+                    spec.kind() + " rough must not queue the floor");
+        }
     }
 }

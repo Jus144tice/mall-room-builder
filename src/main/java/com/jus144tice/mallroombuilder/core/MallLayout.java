@@ -45,11 +45,11 @@ public final class MallLayout {
         Map<GridPos, SortKey> sortKeys = new LinkedHashMap<>();
 
         if (spec.kind() == MallSpec.Kind.SPINE) {
-            addSpine(anchor.spineStart(), spec.spineLength(), sortKeys, carveCells);
+            addSpine(anchor.spineStart(), spec, sortKeys, carveCells);
         } else {
-            addRoom(anchor.facedRoom(), 0, carveCells, framingCells, sortKeys);
+            addRoom(anchor.facedRoom(), 0, spec, carveCells, framingCells, sortKeys);
             if (spec.bothSides()) {
-                addRoom(anchor.oppositeRoom(spec), 1, carveCells, framingCells, sortKeys);
+                addRoom(anchor.oppositeRoom(spec), 1, spec, carveCells, framingCells, sortKeys);
             }
         }
 
@@ -64,22 +64,19 @@ public final class MallLayout {
     private void addRoom(
             RoomPlacement room,
             int unit,
+            MallSpec spec,
             Set<GridPos> carveCells,
             Set<GridPos> framingCells,
             Map<GridPos, SortKey> sortKeys) {
-        for (GridPos p : RoomGeometry.interior(room)) {
-            carveCells.add(p);
-            sortKeys.putIfAbsent(p, keyFor(room, unit, p));
-        }
-        for (GridPos p : RoomGeometry.visibleSkin(room)) {
+        for (GridPos p : RoomGeometry.carve(room, spec.finishRecesses())) {
             carveCells.add(p);
             sortKeys.putIfAbsent(p, keyFor(room, unit, p));
         }
         framingCells.addAll(RoomGeometry.framing(room));
     }
 
-    private void addSpine(RoomPlacement start, int length, Map<GridPos, SortKey> sortKeys, Set<GridPos> carveCells) {
-        for (GridPos p : SpineGeometry.carve(start, length)) {
+    private void addSpine(RoomPlacement start, MallSpec spec, Map<GridPos, SortKey> sortKeys, Set<GridPos> carveCells) {
+        for (GridPos p : SpineGeometry.carve(start, spec.spineLength(), spec.finishRecesses())) {
             carveCells.add(p);
             sortKeys.putIfAbsent(p, keyFor(start, 0, p));
         }
