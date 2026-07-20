@@ -61,6 +61,9 @@ class ConfigTest {
         assertEquals(true, Config.ABORT_ON_LOW_HEALTH.getDefault());
         assertEquals(true, Config.AUTO_BACKFILL_FRAMING.getDefault(), "framing gets repaired if it goes missing");
         assertEquals(false, Config.AUTO_SELECT_TOOL.getDefault(), "the player's pickaxe choice is honoured");
+        assertEquals(true, Config.ABORT_ON_WRONG_TOOL.getDefault(), "never break a block without dropping it");
+        assertEquals(true, Config.ALLOW_TOOL_SWAP.getDefault(), "a pickaxe auto-replace must not read as takeover");
+        assertEquals(40, Config.TOOL_GRACE_TICKS.getDefault());
         assertEquals(false, Config.DEBUG_LOGGING.getDefault());
     }
 
@@ -86,6 +89,9 @@ class ConfigTest {
         assertEquals(20, Config.framingScanInterval());
         assertEquals(4, Config.placeCooldownTicks());
         assertFalse(Config.autoSelectTool());
+        assertTrue(Config.abortOnWrongTool());
+        assertEquals(40, Config.toolGraceTicks());
+        assertTrue(Config.allowToolSwap());
         assertTrue(Config.restoreHotbarSlotOnFinish());
         assertTrue(Config.abortOnLiquid());
         assertTrue(Config.abortOnLowHealth());

@@ -4,6 +4,31 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-07-20
+
+### Added
+
+- **Never break a block the held tool cannot harvest.** Hit obsidian with a stone pickaxe and the job
+  *pauses* instead of mining — breaking it would destroy the material the mod exists to collect.
+  After `toolGraceTicks` (default 40) it aborts and names the block. Blocks that need no tool at all
+  never trigger it.
+
+  Uses NeoForge's position-sensitive `hasCorrectToolForDrops(state, level, pos)`, which routes
+  through the harvest-check event, so other mods' tool rules are respected.
+- **Tolerates a tool swap mid-job.** A hotbar slot change is reconciled *before* the dead-man's
+  switch sees it: if the newly selected item can still harvest the target, the job re-latches and
+  carries on. That keeps a pickaxe-auto-replace mod from aborting every job, and the harvest pause
+  above doubles as its window to act.
+
+  Trade-off: scrolling from one pickaxe to another no longer aborts. Mouse-look and WASD were always
+  the strong takeover signals. `allowToolSwap = false` restores the strict behaviour.
+- `abortOnWrongTool` (`true`), `toolGraceTicks` (`40`), `allowToolSwap` (`true`) config keys.
+
+### Fixed
+
+- The mods-list description still carried the 0.1.0 blurb — decorated skin, doorways, skinning in
+  cobblestone — none of which has been true since 0.2.0.
+
 ## [0.4.0] — 2026-07-20
 
 ### Added

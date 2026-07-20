@@ -48,6 +48,27 @@ public final class MineDriver {
         return level.getBlockState(pos).isAir();
     }
 
+    /**
+     * Would breaking this block actually yield its drop with what the player is holding?
+     *
+     * <p>The whole point of this mod is that you keep the material, so mining obsidian with a stone
+     * pickaxe is a failure, not a slow success. Blocks that do not require a tool at all (dirt,
+     * gravel) always pass.</p>
+     *
+     * <p>Uses NeoForge's <em>position-sensitive</em> overload, which routes through
+     * {@code EventHooks.doPlayerHarvestCheck} — the plain {@code hasCorrectToolForDrops(BlockState)}
+     * is deprecated precisely because it bypasses that, and bypassing it would ignore any other mod
+     * that adjusts harvest rules.</p>
+     */
+    public static boolean canHarvest(LocalPlayer player, ClientLevel level, BlockPos pos) {
+        return player.hasCorrectToolForDrops(level.getBlockState(pos), level, pos);
+    }
+
+    /** A readable name for the block at {@code pos}, for abort messages. */
+    public static String blockName(ClientLevel level, BlockPos pos) {
+        return level.getBlockState(pos).getBlock().getName().getString();
+    }
+
     /** The face to report breaking from. Cosmetic — the server ignores it. */
     public static Direction faceFromEye(LocalPlayer player, BlockPos pos) {
         Vec3 toEye = player.getEyePosition().subtract(Vec3.atCenterOf(pos));

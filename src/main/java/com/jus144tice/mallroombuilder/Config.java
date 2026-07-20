@@ -121,6 +121,27 @@ public final class Config {
 
     // --- Inventory ----------------------------------------------------------
 
+    public static final ModConfigSpec.BooleanValue ABORT_ON_WRONG_TOOL = BUILDER.comment(
+                    "Stop the job if a queued block would not drop with the tool you are holding --",
+                    "obsidian with a stone pickaxe, say. The point of the mod is that you keep the",
+                    "material, so mining it anyway would be a silent loss. Blocks that need no tool",
+                    "at all (dirt, gravel) never trigger this.")
+            .define("abortOnWrongTool", true);
+
+    public static final ModConfigSpec.IntValue TOOL_GRACE_TICKS = BUILDER.comment(
+                    "How long to wait, holding the wrong tool, before giving up. This is the window a",
+                    "tool-replacement mod has to swap a fresh pickaxe in after one breaks; the job",
+                    "pauses rather than mining, so nothing is lost while it waits. 20 ticks = 1s.")
+            .defineInRange("toolGraceTicks", 40, 0, 400);
+
+    public static final ModConfigSpec.BooleanValue ALLOW_TOOL_SWAP = BUILDER.comment(
+                    "Treat a hotbar slot change as a tool swap rather than as you taking over, so long",
+                    "as the newly selected item can still harvest the block being worked on.",
+                    "Leave true if you run a mod that auto-replaces a broken pickaxe -- otherwise the",
+                    "dead-man's switch fires the moment it swaps. Switching to something that cannot",
+                    "mine the target still aborts either way.")
+            .define("allowToolSwap", true);
+
     public static final ModConfigSpec.BooleanValue AUTO_SELECT_TOOL = BUILDER.comment(
                     "Switch to the fastest pickaxe in your hotbar before carving.",
                     "Off by default: you chose which pickaxe to hold, and the mod should honour that.")
@@ -260,6 +281,18 @@ public final class Config {
 
     public static int placeCooldownTicks() {
         return safeGet(PLACE_COOLDOWN_TICKS, 4);
+    }
+
+    public static boolean abortOnWrongTool() {
+        return safeGet(ABORT_ON_WRONG_TOOL, true);
+    }
+
+    public static int toolGraceTicks() {
+        return safeGet(TOOL_GRACE_TICKS, 40);
+    }
+
+    public static boolean allowToolSwap() {
+        return safeGet(ALLOW_TOOL_SWAP, true);
     }
 
     public static boolean autoSelectTool() {

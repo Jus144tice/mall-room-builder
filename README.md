@@ -119,6 +119,18 @@ server would accept, so the mod never reaches further than you can.
 
 When nothing is in reach it walks you to the next block. It always prefers standing still and mining.
 
+**It will not break a block it can't harvest.** Hit obsidian with a stone pickaxe and the job
+*pauses* rather than mining — breaking it would destroy it for nothing, and keeping the material is
+the whole point. After `toolGraceTicks` (default 40, two seconds) it aborts and names the block.
+
+That pause doubles as the window for a **tool-replacement mod**: if your pickaxe breaks mid-job and
+something swaps a fresh one in, the job picks straight back up. If the replacement lands in a
+*different* hotbar slot, that's tolerated too — a slot change is treated as a tool swap rather than
+as you taking over, as long as the new item can still harvest the block being worked. Switching to
+something that can't still aborts. (Trade-off: scrolling from one pickaxe to another no longer
+aborts. Mouse-look and WASD were always the strong signals; the slot check was the weak one. Set
+`allowToolSwap = false` for the old strict behaviour.)
+
 ### Order of operations
 
 **Slice by slice, near to far.** A room is an alcove cut into rock from outside: the far end is
@@ -170,6 +182,9 @@ lands at `build/libs/mallroombuilder-<version>.jar`.
 | `lookAbortDegrees` | `1.0` | mouse-look sensitivity of the switch |
 | `autoBackfillFraming` | `true` | repair framing that goes missing |
 | `backfillBlock` | `minecraft:cobblestone` | what to repair it with |
+| `abortOnWrongTool` | `true` | stop rather than break a block that wouldn't drop |
+| `toolGraceTicks` | `40` | how long to wait for a replacement tool before giving up |
+| `allowToolSwap` | `true` | treat a hotbar change to another valid tool as a swap, not a takeover |
 | `autoSelectTool` | `false` | off by design — you chose which pickaxe to hold |
 
 ## Verification status
@@ -191,6 +206,8 @@ digging the floor out from under you. The mod is confirmed to load cleanly in a 
 - [ ] Auto-walk carries you into the room as the near slices open
 - [ ] Floors: you end one block lower inside the room, never fall further, never suffocate
 - [ ] Gravel above the ceiling → the framing watcher backfills anything it knocks out
+- [ ] Put obsidian in the path with a stone pickaxe → job pauses, then aborts naming the block, obsidian intact
+- [ ] Let a pickaxe break mid-job → your replacement mod swaps in and the job carries on
 - [ ] `room both` produces two rooms facing each other, correctly spaced
 - [ ] `/mallroom stop` mid-carve leaves no stuck cracking overlay
 - [ ] Hotbar restored afterwards; no mid-break slot switch resetting progress

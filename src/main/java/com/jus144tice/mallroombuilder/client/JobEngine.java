@@ -70,6 +70,7 @@ public final class JobEngine {
     private int verifySweeps;
     private int framingScanTicks;
     private int placeCooldown;
+    private int wrongToolTicks;
     private int carved;
     private int backfilled;
     private boolean warnedNoBackfillMaterial;
@@ -128,6 +129,7 @@ public final class JobEngine {
         this.verifySweeps = 0;
         this.framingScanTicks = 0;
         this.placeCooldown = 0;
+        this.wrongToolTicks = 0;
         this.carved = 0;
         this.backfilled = 0;
         this.warnedNoBackfillMaterial = false;
@@ -210,6 +212,10 @@ public final class JobEngine {
             return;
         }
 
+        // Reconcile a tool swap before the dead-man's switch sees it, or a mod that auto-replaces a
+        // broken pickaxe would read as the player grabbing the controls.
+        reconcileToolSwap(player, level);
+
         String tripped = InputWatch.tripped(mc);
         if (tripped != null) {
             abort(mc, tripped);
@@ -287,8 +293,25 @@ public final class JobEngine {
             return;
         }
 
+        BlockPos targetPos = MineDriver.toBlockPos(currentTarget);
+
+        // Hold fire if the held tool would destroy this block without dropping it. The whole point
+        // of the mod is that you keep the material, so this pauses rather than mining -- which also
+        // gives a tool-replacement mod its window to swap a fresh pickaxe in after one breaks.
+        if (Config.abortOnWrongTool() && !MineDriver.canHarvest(player, level, targetPos)) {
+            AutoWalk.stop();
+            MineDriver.cancel(mc);
+            if (++wrongToolTicks > Config.toolGraceTicks()) {
+                abort(
+                        mc,
+                        "no tool for " + MineDriver.blockName(level, targetPos) + " — it would break without dropping");
+            }
+            return;
+        }
+        wrongToolTicks = 0;
+
         AutoWalk.stop();
-        MineDriver.drive(mc, player, MineDriver.toBlockPos(currentTarget));
+        MineDriver.drive(mc, player, targetPos);
 
         if (++blockTicks > Config.blockTimeoutTicks()) {
             MallRoomBuilder.debug("giving up on " + currentTarget + " after " + blockTicks + " ticks");
@@ -499,6 +522,36 @@ public final class JobEngine {
         }
     }
 
+    /**
+     * Accepts a hotbar change that is a tool swap rather than the player taking over.
+     *
+     * <p>A mod that replaces a broken pickaxe usually restocks the same slot, which is invisible
+     * here — but some switch to another slot instead, and that would trip the dead-man's switch mid
+     * job. So: if the newly selected item can still harvest what we are working on, re-latch and
+     * carry on. If it cannot, the switch stands and {@link InputWatch} aborts as usual.</p>
+     *
+     * <p>The trade is that scrolling from one pickaxe to another no longer aborts. Mouse-look and
+     * WASD are the strong takeover signals; the slot check was always the weak one.</p>
+     */
+    private void reconcileToolSwap(LocalPlayer player, ClientLevel level) {
+        if (!Config.allowToolSwap()) {
+            return;
+        }
+        int selected = player.getInventory().selected;
+        if (selected == InputWatch.expectedSlot()) {
+            return;
+        }
+        BlockPos reference = currentTarget == null ? null : MineDriver.toBlockPos(currentTarget);
+        boolean stillUsable = reference != null
+                ? MineDriver.canHarvest(player, level, reference)
+                : player.getInventory().getSelected().getDestroySpeed(Blocks.STONE.defaultBlockState()) > 1.0f;
+        if (stillUsable) {
+            MallRoomBuilder.debug("accepted tool swap to slot " + selected);
+            InputWatch.setExpectedSlot(selected);
+            HotbarSelector.latchMiningSlot(player);
+        }
+    }
+
     private String safetyGate(LocalPlayer player) {
         if (Config.abortOnLowHealth() && player.getHealth() < Config.minHealth()) {
             return "health too low";
@@ -560,7 +613,9 @@ public final class JobEngine {
         return switch (state) {
             case IDLE -> "idle";
             case ARMING -> "waiting for you to release all keys";
-            case CARVING -> "carving " + queueFraction();
+            case CARVING -> wrongToolTicks > 0
+                    ? "waiting for a tool that can harvest this block"
+                    : "carving " + queueFraction();
         };
     }
 
