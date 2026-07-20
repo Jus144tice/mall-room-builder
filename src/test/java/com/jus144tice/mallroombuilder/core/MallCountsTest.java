@@ -11,18 +11,14 @@ import org.junit.jupiter.api.Test;
 class MallCountsTest {
 
     @Test
-    void minedTotalIsAirPlusSkin() {
-        assertEquals(717, new MallCounts(355, 362).minedTotal());
-        assertEquals(275, new MallCounts(125, 150).minedTotal());
+    void minedTotalIsJustTheCarveBecauseNothingIsPlaced() {
+        assertEquals(397, new MallCounts(397, 44).minedTotal());
+        assertEquals(647, new MallCounts(647, 88).minedTotal());
     }
 
     @Test
-    void stacksRoundUp() {
-        assertEquals(0, new MallCounts(0, 0).stacksNeeded());
-        assertEquals(1, new MallCounts(0, 1).stacksNeeded());
-        assertEquals(1, new MallCounts(0, 64).stacksNeeded());
-        assertEquals(2, new MallCounts(0, 65).stacksNeeded());
-        assertEquals(6, new MallCounts(355, 362).stacksNeeded());
-        assertEquals(3, new MallCounts(125, 150).stacksNeeded());
+    void envelopeIsCarvePlusFraming() {
+        // One isolated room: 250 carved + 44 framing = the 6x7x7 envelope.
+        assertEquals(294, new MallCounts(250, 44).envelopeTotal());
     }
 }

@@ -9,24 +9,26 @@ import com.jus144tice.mallroombuilder.core.MallAnchor;
 import com.jus144tice.mallroombuilder.core.MallCounts;
 import com.jus144tice.mallroombuilder.core.MallLayout;
 import com.jus144tice.mallroombuilder.core.MallSpec;
-import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
-import net.minecraft.util.Mth;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.client.event.RegisterClientCommandsEvent;
 
 /**
  * The {@code /mallroom} command tree.
  *
+ * <p>You stand in the spine hallway facing the wall you want opened; facing picks the side. Adding
+ * {@code both} also carves the room directly opposite.</p>
+ *
  * <p>Registered from {@link RegisterClientCommandsEvent} on the <strong>game</strong> bus, which
- * re-fires on every world join. Nothing here reaches the server; feedback goes through
- * {@code ClientCommandSourceStack.sendSuccess}, which is overridden to a local system message.</p>
+ * re-fires on every world join. Nothing reaches the server; feedback goes through
+ * {@code ClientCommandSourceStack.sendSuccess}, overridden to a local system message.</p>
  *
  * <p><strong>No permission gate.</strong> {@code ClientCommandHandler} builds its source with
  * {@code player.getPermissionLevel()}, which is 0 on any normal server — so a
@@ -41,81 +43,63 @@ public final class MallCommand {
         event.getDispatcher()
                 .register(Commands.literal("mallroom")
                         .then(Commands.literal("build")
-                                .executes(ctx -> build(ctx, Config.defaultRoomCount(), Config.defaultHallLength()))
-                                .then(Commands.argument("rooms", IntegerArgumentType.integer(1, 32))
-                                        .executes(ctx -> build(
-                                                ctx,
-                                                IntegerArgumentType.getInteger(ctx, "rooms"),
-                                                Config.defaultHallLength()))
-                                        .then(Commands.argument("hallLength", IntegerArgumentType.integer(1, 64))
-                                                .executes(ctx -> build(
-                                                        ctx,
-                                                        IntegerArgumentType.getInteger(ctx, "rooms"),
-                                                        IntegerArgumentType.getInteger(ctx, "hallLength"))))))
+                                .executes(ctx -> build(ctx, false))
+                                .then(Commands.literal("both").executes(ctx -> build(ctx, true))))
                         .then(Commands.literal("preview")
-                                .executes(ctx -> preview(ctx, Config.defaultRoomCount(), Config.defaultHallLength()))
-                                .then(Commands.argument("rooms", IntegerArgumentType.integer(1, 32))
-                                        .executes(ctx -> preview(
-                                                ctx,
-                                                IntegerArgumentType.getInteger(ctx, "rooms"),
-                                                Config.defaultHallLength()))
-                                        .then(Commands.argument("hallLength", IntegerArgumentType.integer(1, 64))
-                                                .executes(ctx -> preview(
-                                                        ctx,
-                                                        IntegerArgumentType.getInteger(ctx, "rooms"),
-                                                        IntegerArgumentType.getInteger(ctx, "hallLength"))))))
+                                .executes(ctx -> preview(ctx, false))
+                                .then(Commands.literal("both").executes(ctx -> preview(ctx, true))))
                         .then(Commands.literal("status").executes(MallCommand::status))
                         .then(Commands.literal("stop").executes(MallCommand::stop)));
     }
 
-    private static MallSpec specOf(int rooms, int hallLength) {
-        return new MallSpec(rooms, hallLength, Config.coverDoorThreshold());
+    private static MallSpec specOf(boolean bothSides) {
+        return new MallSpec(bothSides, Config.finishHallway(), Config.hallDepth());
     }
 
-    private static int preview(CommandContext<CommandSourceStack> ctx, int rooms, int hallLength) {
+    private static int preview(CommandContext<CommandSourceStack> ctx, boolean bothSides) {
         Minecraft mc = Minecraft.getInstance();
         LocalPlayer player = mc.player;
-        if (player == null) {
+        ClientLevel level = mc.level;
+        if (player == null || level == null) {
             return 0;
         }
-        MallSpec spec = specOf(rooms, hallLength);
-        MallAnchor anchor = MallAnchor.of(
-                Mth.floor(player.getX()), Mth.floor(player.getY()), Mth.floor(player.getZ()), player.getYRot());
-        MallLayout layout = new MallLayout(anchor, spec);
-        MallCounts counts = layout.counts();
-
-        int extent = (rooms - 1) * spec.pitch() + 7;
-        String facing = anchor.facing().name().toLowerCase();
-
-        feedback(ctx, ChatFormatting.AQUA, rooms + " room(s), hallway " + hallLength + " long, running " + facing);
-        feedback(
-                ctx,
-                ChatFormatting.GRAY,
-                "  " + counts.minedTotal() + " blocks to mine (" + counts.airCount() + " air + " + counts.skinCount()
-                        + " wall cavity)");
-        feedback(
-                ctx,
-                ChatFormatting.GRAY,
-                "  " + counts.skinCount() + " " + Config.buildBlock() + " to place (" + counts.stacksNeeded()
-                        + " stacks)");
-        feedback(
-                ctx,
-                ChatFormatting.GRAY,
-                "  extends " + extent + " blocks " + facing + ", floor at y="
-                        + anchor.playerFeet().y());
-
-        if (!player.onGround()) {
+        MallAnchor anchor = JobEngine.anchorFor(player, level);
+        if (anchor == null) {
             feedback(
                     ctx,
-                    ChatFormatting.YELLOW,
-                    "  You are not standing on the ground — the floor will be at your feet.");
+                    ChatFormatting.RED,
+                    "No wall within " + Config.maxWallScan()
+                            + " blocks ahead. Stand in the hallway facing the wall you want opened.");
+            return 0;
+        }
+
+        MallSpec spec = specOf(bothSides);
+        MallLayout layout = new MallLayout(anchor, spec);
+        MallCounts counts = layout.counts();
+        String facing = anchor.facing().name().toLowerCase();
+
+        feedback(
+                ctx,
+                ChatFormatting.AQUA,
+                spec.roomCount() + " room(s) " + facing + ", opening " + anchor.openingDistance() + " block(s) ahead");
+        feedback(ctx, ChatFormatting.GRAY, "  " + counts.minedTotal() + " blocks to mine");
+        feedback(
+                ctx, ChatFormatting.GRAY, "  " + counts.framingCount() + " framing blocks left standing (never mined)");
+        feedback(
+                ctx,
+                ChatFormatting.GRAY,
+                "  floor at y=" + anchor.playerFeet().y() + ", carve reaches y=" + anchor.floorPlateY() + " to y="
+                        + anchor.ceilingPlateY());
+        feedback(ctx, ChatFormatting.DARK_GRAY, "  nothing is placed — decorating the recesses is up to you");
+
+        if (!player.onGround()) {
+            feedback(ctx, ChatFormatting.YELLOW, "  You are not standing on the ground — the floor follows your feet.");
         }
         return 1;
     }
 
-    private static int build(CommandContext<CommandSourceStack> ctx, int rooms, int hallLength) {
-        Minecraft mc = Minecraft.getInstance();
-        String error = JobEngine.INSTANCE.start(mc, specOf(rooms, hallLength));
+    private static int build(CommandContext<CommandSourceStack> ctx, boolean bothSides) {
+        String error = JobEngine.INSTANCE.start(Minecraft.getInstance(), specOf(bothSides));
         if (error != null) {
             feedback(ctx, ChatFormatting.RED, error);
             return 0;

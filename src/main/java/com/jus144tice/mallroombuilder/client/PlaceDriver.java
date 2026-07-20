@@ -100,14 +100,14 @@ public final class PlaceDriver {
      *
      * @return true if vanilla consumed the action
      */
-    public static boolean place(Minecraft mc, LocalPlayer player, Support support) {
+    public static boolean place(Minecraft mc, LocalPlayer player, Support support, InteractionHand hand) {
         if (mc.gameMode == null) {
             return false;
         }
         BlockHitResult hit = new BlockHitResult(support.hitVec(), support.face(), support.pos(), false);
-        InteractionResult result = mc.gameMode.useItemOn(player, InteractionHand.MAIN_HAND, hit);
+        InteractionResult result = mc.gameMode.useItemOn(player, hand, hit);
         if (result != null && result.consumesAction()) {
-            player.swing(InteractionHand.MAIN_HAND);
+            player.swing(hand);
             return true;
         }
         return false;

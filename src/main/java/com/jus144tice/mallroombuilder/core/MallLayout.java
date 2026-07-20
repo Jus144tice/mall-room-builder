@@ -7,64 +7,102 @@ package com.jus144tice.mallroombuilder.core;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
- * The composer, and the single source of truth for what a job will touch.
+ * The composer, and the single source of truth for what a job touches.
  *
- * <p>Rooms and hallways are generated independently and then combined by set algebra in which
- * <strong>air always wins</strong>. That one rule handles the doorways: a hallway's air volume
- * spans the two room wall plates it pierces, so subtracting air from skin at the end removes the 15
- * cells of each pierced plate and leaves a clean 10-block jamb. No special-casing.</p>
+ * <p>Two sets come out of it, and they never overlap:</p>
  *
- * <h2>Counts are emergent, not fixed</h2>
+ * <ul>
+ *   <li>{@link #carve()} — every cell to mine. The 5x5x5 interior plus the five 1-block face
+ *       recesses (ceiling, back, both sides, floor), and the fronting stretch of corridor.</li>
+ *   <li>{@link #framing()} — every cell to <em>protect</em>. Never queued for mining, and watched
+ *       during the job so anything that goes missing can be backfilled.</li>
+ * </ul>
  *
- * <p>An isolated room is 150 skin and 275 mined. Once rooms are joined those numbers move —
- * doorways subtract, hallways add — so nothing downstream should assume a per-room figure. Ask
- * {@link #counts()}. For reference, two rooms at {@code hallLength = 5} come to 355 air + 362 skin
- * = 717 mined.</p>
+ * <p>Nothing is ever placed as part of building a room. The mod carves the shell and the decorating
+ * happens by hand afterwards; the only block it ever puts down is a backfill into framing that has
+ * gone missing.</p>
  */
 public final class MallLayout {
 
     private final MallAnchor anchor;
     private final MallSpec spec;
-    private final Set<GridPos> air;
-    private final Set<GridPos> skin;
+    private final Set<GridPos> carve;
+    private final Set<GridPos> framing;
+    private final Map<GridPos, SortKey> keys;
 
     public MallLayout(MallAnchor anchor, MallSpec spec) {
         this.anchor = anchor;
         this.spec = spec;
 
-        Set<GridPos> airCells = new LinkedHashSet<>();
-        Set<GridPos> skinCells = new LinkedHashSet<>();
+        Set<GridPos> carveCells = new LinkedHashSet<>();
+        Set<GridPos> framingCells = new LinkedHashSet<>();
+        Map<GridPos, SortKey> sortKeys = new LinkedHashMap<>();
 
-        for (int i = 0; i < spec.roomCount(); i++) {
-            GridPos reference = anchor.roomReference(spec, i);
-            airCells.addAll(RoomGeometry.interior(reference));
-            skinCells.addAll(RoomGeometry.visibleSkin(reference));
+        RoomPlacement faced = anchor.facedRoom();
+
+        // Unit 0 is the corridor: it is where the player is standing, so it is usually already open
+        // and retires immediately. Doing it first still matters for a fresh spur.
+        if (spec.finishHallway()) {
+            addHall(faced, spec.hallDepth(), 0, carveCells, sortKeys);
         }
-        for (int i = 0; i < spec.hallCount(); i++) {
-            airCells.addAll(HallGeometry.interior(anchor, spec, i));
-            skinCells.addAll(HallGeometry.visibleSkin(anchor, spec, i));
+        addRoom(faced, 1, carveCells, framingCells, sortKeys);
+        if (spec.bothSides()) {
+            addRoom(anchor.oppositeRoom(spec), 2, carveCells, framingCells, sortKeys);
         }
 
-        // Air wins: this is what cuts the doorways out of the room wall plates.
-        skinCells.removeAll(airCells);
+        // A cell carved for one unit is carved, whatever another unit calls it. Adjacent slots
+        // deliberately overlap by a block at the pillars.
+        framingCells.removeAll(carveCells);
 
-        this.air = Collections.unmodifiableSet(airCells);
-        this.skin = Collections.unmodifiableSet(skinCells);
+        this.carve = Collections.unmodifiableSet(carveCells);
+        this.framing = Collections.unmodifiableSet(framingCells);
+        this.keys = sortKeys;
     }
 
-    /** Cells that must end up as air. */
-    public Set<GridPos> air() {
-        return air;
+    private void addRoom(
+            RoomPlacement room,
+            int unit,
+            Set<GridPos> carveCells,
+            Set<GridPos> framingCells,
+            Map<GridPos, SortKey> sortKeys) {
+        for (GridPos p : RoomGeometry.interior(room)) {
+            carveCells.add(p);
+            sortKeys.putIfAbsent(p, keyFor(room, unit, p));
+        }
+        for (GridPos p : RoomGeometry.visibleSkin(room)) {
+            carveCells.add(p);
+            sortKeys.putIfAbsent(p, keyFor(room, unit, p));
+        }
+        framingCells.addAll(RoomGeometry.framing(room));
     }
 
-    /** Cells that must end up as the build block. Disjoint from {@link #air()}. */
-    public Set<GridPos> skin() {
-        return skin;
+    private void addHall(
+            RoomPlacement faced, int depth, int unit, Set<GridPos> carveCells, Map<GridPos, SortKey> sortKeys) {
+        for (GridPos p : HallGeometry.interior(faced, depth)) {
+            carveCells.add(p);
+            sortKeys.putIfAbsent(p, keyFor(faced, unit, p));
+        }
+        for (GridPos p : HallGeometry.visibleSkin(faced, depth)) {
+            carveCells.add(p);
+            sortKeys.putIfAbsent(p, keyFor(faced, unit, p));
+        }
+    }
+
+    /** Cells to mine. */
+    public Set<GridPos> carve() {
+        return carve;
+    }
+
+    /** Cells to leave standing, and to backfill if they go missing. */
+    public Set<GridPos> framing() {
+        return framing;
     }
 
     public MallAnchor anchor() {
@@ -76,107 +114,52 @@ public final class MallLayout {
     }
 
     public MallCounts counts() {
-        return new MallCounts(air.size(), skin.size());
+        return new MallCounts(carve.size(), framing.size());
     }
 
     /**
      * Every cell to mine, in the order to mine it.
      *
-     * <p>Ordering is driven by two hazards: falling into a hole you just dug, and gravel dropping
-     * in from above. Within each unit (room 0, hall 0, room 1, ...) the pass order is:</p>
+     * <p>Two things drive this, and both are load-bearing:</p>
      *
-     * <ol>
-     *   <li><strong>Ceiling plate first.</strong> Anything unstable above the room is disturbed
-     *       while the room is still solid, so it lands on un-carved ground and gets swept up later
-     *       rather than burying a hole. The far ceiling corner is about 4.40 blocks from a standing
-     *       eye — inside the 4.5 default reach — so the whole ceiling is minable from the original
-     *       floor without repositioning.</li>
-     *   <li><strong>Then top-down through the body</strong>, one Y layer at a time, so nothing is
-     *       ever undermined.</li>
-     *   <li><strong>Floor plate last</strong>, near to far, so the player mines the floor behind and
-     *       beside themselves and always has un-mined floor ahead.</li>
-     * </ol>
+     * <p><strong>Slice by slice, near to far.</strong> A room is an alcove carved into rock from
+     * outside, so the far end is neither reachable nor walkable until the near end is open. Doing
+     * the whole ceiling first — which is right for a room you stand in the middle of — deadlocks
+     * here: the far ceiling is about 5.25 blocks away, past the 4.5 reach, and you cannot walk in to
+     * close the gap. Within each slice the ceiling still goes before the body, so anything unstable
+     * overhead drops while there is still solid ground beneath it.</p>
      *
-     * <p>Units run in travel order, so the player walks forward through the mall exactly once.</p>
+     * <p><strong>Floor recesses last, across the whole job.</strong> Carving the floor drops the
+     * player a block, and a lower eye costs reach on every ceiling cell after it. Leaving all the
+     * floors to a final pass means the whole job is worked from the original standing height, and
+     * the one-block drop happens at the very end when nothing is left to reach.</p>
      */
     public List<GridPos> mineOrder() {
-        List<GridPos> all = new ArrayList<>(air.size() + skin.size());
-        all.addAll(air);
-        all.addAll(skin);
-        return sorted(all);
-    }
-
-    /**
-     * Every cell to place, in the order to place it — simply the reverse of the carve order,
-     * restricted to skin.
-     *
-     * <p>The reversal is load-bearing, not a convenience. Carving ends at the far end of the mall,
-     * so building starts there and there is no walk back. And reversing ceiling-then-body-then-floor
-     * gives floor, then body, then ceiling — the only order that works, because the floor has to
-     * exist before the player can stand at the right height, and the ceiling wants to go last from
-     * below where it is always in reach.
-     */
-    public List<GridPos> buildOrder() {
-        List<GridPos> out = new ArrayList<>(skin);
-        out = sorted(out);
-        Collections.reverse(out);
+        List<GridPos> out = new ArrayList<>(carve);
+        out.sort(Comparator.comparing(
+                keys::get,
+                Comparator.comparingInt(SortKey::floorPass)
+                        .thenComparingInt(SortKey::unit)
+                        .thenComparingInt(SortKey::slice)
+                        .thenComparingInt(SortKey::tier)
+                        .thenComparingInt(SortKey::absSide)
+                        .thenComparingInt(SortKey::side)));
         return out;
     }
 
-    private List<GridPos> sorted(List<GridPos> cells) {
-        List<Keyed> keyed = new ArrayList<>(cells.size());
-        for (GridPos p : cells) {
-            keyed.add(key(p));
-        }
-        keyed.sort(Comparator.comparingInt(Keyed::unit)
-                .thenComparingInt(Keyed::pass)
-                .thenComparingInt(Keyed::layer)
-                .thenComparingInt(Keyed::along)
-                .thenComparingInt(Keyed::absSide)
-                .thenComparingInt(Keyed::side)
-                .thenComparingInt(k -> k.pos().y()));
-        List<GridPos> out = new ArrayList<>(keyed.size());
-        for (Keyed k : keyed) {
-            out.add(k.pos());
-        }
-        return out;
+    private SortKey keyFor(RoomPlacement frame, int unit, GridPos pos) {
+        int d = frame.depthOf(pos);
+        int side = frame.sideOf(pos);
+        int dy = pos.y() - frame.floorY();
+
+        boolean isFloor = dy == -1;
+        // The corridor runs backwards from the opening, so flip its depth to keep "nearest first"
+        // meaningful in the same comparison.
+        int slice = d >= 0 ? d : -d;
+        // Ceiling leads each slice, then the body downwards.
+        int tier = dy == RoomGeometry.INTERIOR_SIZE ? 0 : RoomGeometry.INTERIOR_SIZE - dy;
+        return new SortKey(isFloor ? 1 : 0, unit, slice, tier, Math.abs(side), side);
     }
 
-    private Keyed key(GridPos pos) {
-        int along = anchor.alongOf(pos);
-        int side = anchor.sideOf(pos);
-        int dy = pos.y() - anchor.playerFeet().y();
-
-        int pass;
-        int layer;
-        if (dy == RoomGeometry.INTERIOR_SIZE) {
-            pass = 0; // ceiling plate
-            layer = 0;
-        } else if (dy == -1) {
-            pass = 2; // floor plate
-            layer = 0;
-        } else {
-            pass = 1; // body, top-down
-            layer = RoomGeometry.INTERIOR_SIZE - 1 - dy;
-        }
-        return new Keyed(pos, unitOrdinal(along), pass, layer, along, Math.abs(side), side);
-    }
-
-    /**
-     * Which unit a cell belongs to, from its along-coordinate alone: room {@code i} is
-     * {@code 2i}, the hallway following it is {@code 2i + 1}.
-     *
-     * <p>Deriving this from {@code along} only is what guarantees a floor-plate cell and the
-     * interior directly above it land in the same unit — and therefore that the floor is always
-     * mined after the body above it.</p>
-     */
-    private int unitOrdinal(int along) {
-        int pitch = spec.pitch();
-        int room = Math.floorDiv(along + RoomGeometry.ENVELOPE_RADIUS, pitch);
-        room = Math.max(0, Math.min(spec.roomCount() - 1, room));
-        boolean insideRoom = along <= room * pitch + RoomGeometry.ENVELOPE_RADIUS;
-        return insideRoom ? room * 2 : room * 2 + 1;
-    }
-
-    private record Keyed(GridPos pos, int unit, int pass, int layer, int along, int absSide, int side) {}
+    private record SortKey(int floorPass, int unit, int slice, int tier, int absSide, int side) {}
 }

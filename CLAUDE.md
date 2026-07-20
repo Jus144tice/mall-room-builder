@@ -5,20 +5,23 @@
 
 ## What this mod is
 
-A **client-side, NeoForge, Minecraft 1.21.1** builder for grid-aligned "mall" rooms. Given where the
-player stands and faces, it computes a chain of rooms and hallways, mines the volume through the
-real vanilla mining path, and skins the visible faces in cobblestone.
+A **client-side, NeoForge, Minecraft 1.21.1** carver for mall rooms. You stand in a spine hallway
+facing the wall you want opened; it mines out the room and leaves.
 
-- A room is a **5×5×5 interior** in a **7×7×7 carved envelope**. Of the 218 shell blocks only the
-  **150** forming the six flat 5×5 faces are visible from inside; the **68** on edges and corners
-  (the **framing**) are never mined.
-- Hallways are **3 wide × 5 tall** finished, **5 × 7** carved. Room pitch = `7 + hallLength`.
-- It **initiates** mining and **steers movement**. That makes it genuine automation — unlike its
-  siblings in this collection it is *not* vanilla-server-safe, and the README says so plainly.
-- It sends only vanilla packets, never extends reach, and never rotates the camera.
+- **It carves. It does not build.** A room is 250 blocks of mining and nothing is placed. Decorating
+  the recesses is done by hand afterwards. The one exception is backfilling framing that has gone
+  missing (gravel, mobs) — that is the only reason cobblestone appears anywhere in this codebase.
+- **Topology:** a spine hallway with rooms budding off it perpendicular, on both sides, shoulder to
+  shoulder. A room's whole hallway-facing side is **open**; the pillars framing each opening are the
+  corridor wall, present between rooms and absent where a room is.
+- **Geometry:** 5x5x5 interior, plus a 1-block recess behind each of its five faces. The corners
+  where two recesses would meet are never visible from inside and are left exactly as found — the
+  **framing**, 44 cells.
+- It **initiates** mining and **steers movement**. That is genuine automation — unlike its siblings
+  in this collection it is *not* vanilla-server-safe, and the README says so plainly.
 
-User-facing docs live in [README.md](README.md); version history in [CHANGELOG.md](CHANGELOG.md);
-every vanilla/NeoForge symbol it leans on is written up in [docs/vanilla-hooks.md](docs/vanilla-hooks.md).
+User docs: [README.md](README.md). History: [CHANGELOG.md](CHANGELOG.md). Every vanilla/NeoForge
+symbol it leans on: [docs/vanilla-hooks.md](docs/vanilla-hooks.md).
 
 ---
 
@@ -26,45 +29,70 @@ every vanilla/NeoForge symbol it leans on is written up in [docs/vanilla-hooks.m
 
 **Keep this file in sync with the code in the SAME session the code changes. Do not defer.**
 
-Triggers (non-exhaustive):
-
-- Adding / removing / renaming any class, method, field, or resource in the **File & symbol map**.
-- Changing the **geometry rules**, the **mine or build ordering**, the **state machine**, or the
-  **abort triggers**.
-- Adding / removing / renaming a **config option** or changing a default.
-- Changing build tooling or platform versions.
+Triggers: adding / removing / renaming anything in the **File & symbol map**; changing the
+**geometry rules**, the **mine ordering**, the **state machine**, or the **abort triggers**; adding
+/ removing / renaming a **config option** or changing a default; changing build tooling or platform
+versions.
 
 Pure-comment or internal-refactor changes with identical public symbols may be left alone. When in
 doubt, update. Keep edits surgical.
 
 ---
 
+## The geometry, precisely
+
+Everything is expressed in three facing-relative numbers, and `RoomGeometry.extremeCount` is the
+whole rule:
+
+```
+d  = blocks back from the opening plane   0..5   (0 is the opening, 5 is the back plate)
+s  = blocks along the spine               -3..3
+dy = height above the walking surface     -1..5
+
+extremes = (d == 5) + (|s| == 3) + (dy == -1 || dy == 5)
+
+  0 -> interior       125  carved
+  1 -> face recess    125  carved      } 250 carved per room
+  2 -> edge            40
+  3 -> corner           4  } 44 framing, never mined
+                          envelope 6 x 7 x 7 = 294
+```
+
+**The depth axis has only one extreme.** The front is a hole, not a wall. If you ever add `d == 0`
+to that predicate the mod will wall the player in and skin jumps to 150 — `RoomGeometryTest`'s
+`onlyTheBackPlaneCountsOnTheDepthAxis` exists to catch exactly that.
+
+Job sizes: one room 250; with corridor frontage 397; `both` 647 carved / 88 framing.
+
+---
+
 ## Architecture
 
-**No mixins.** This is the only mod in the collection without any, and it is deliberate: NeoForge's
+**No mixins.** The only mod in the collection without any, deliberately: NeoForge's
 `MovementInputUpdateEvent` fires exactly where auto-walk needs it, and mining and placing are public
 methods. Nothing can fail at class-transform time. Do not add a mixin without a hard reason.
 
-Same split as `bedrock-line-placement`: **a pure `core/` with zero Minecraft imports**, plus a thin
-`client/` bridge that owns every world read and write.
+**Pure `core/` with zero Minecraft imports**, plus a thin `client/` bridge that owns every world read
+and write.
 
 ```
-/mallroom build
+/mallroom build [both]
   → MallCommand                       (RegisterClientCommandsEvent, game bus)
-    → JobEngine.start()               snapshot anchor, build MallLayout, size + chunk checks
-      → state = ARMING
+    → JobEngine.start()               anchorFor() scans for the wall, builds MallLayout,
+                                      size + chunk checks → state = ARMING
 
 every client tick
   → ClientEvents.onClientTickPost     → JobEngine.tick()
-      ARMING    : wait for InputWatch.allReleased(), then InputWatch.arm() latches look baseline
-      CARVING   : InputWatch.tripped()? → abort
-                  target air yet? → cursor.complete()
-                  cursor.select(canCarve) → MineDriver.drive()   (continueDestroyBlock + swing)
-                  nothing in reach → retireAlreadyFinished(), then AutoWalk.steerTo(cursor.peek())
-                  queue empty → verifyCarve() → beginBuildPhase()
-      BUILDING  : HotbarSelector.ensureBuildBlock() → PAUSED_NO_MATERIAL if none
-                  cursor.select(placeable + has support) → PlaceDriver.place()  (useItemOn)
-                  queue empty → verifyBuild() → finish()
+      ARMING  : wait for InputWatch.allReleased(), then arm() latches look baseline,
+                selectBestTool(), latchMiningSlot()
+      CARVING : InputWatch.tripped()? → abort
+                watchFraming()        → queue any framing gone to air
+                target air yet?       → cursor.complete()
+                tryBackfill()         → only between blocks, never mid-break
+                back on the mining slot? → else swap back and skip the tick
+                cursor.select(canCarve) → MineDriver.drive()  (continueDestroyBlock + swing)
+                nothing in reach      → retireAlreadyCarved(), then AutoWalk.steerTo(cursor.peek())
+                queue empty           → verifyCarve() → finish()
 
 every movement update
   → AutoWalk.onMovementInput          writes Input.forwardImpulse / leftImpulse / up / jumping
@@ -73,19 +101,21 @@ every movement update
 ### Invariants — do not break without updating the tests and this file
 
 - **The `core` package never imports a Minecraft class.** All conversion happens in `client/`.
-- **The anchor is a snapshot.** Taken once in `JobEngine.anchorFor`, never re-read. The player is
-  about to be walked around and may drop a block off the last floor plate; live tracking would drift
-  the geometry mid-job.
-- **Progress is re-derived from the world, never assumed.** Carved iff `isAir()`, skinned iff the
-  block matches. This one choice is what lets a single verify sweep recover from server rejections,
-  falling gravel, other players' blocks, and unloaded chunks.
+- **The anchor is a snapshot**, including the scanned opening distance. The player is about to be
+  walked around and will drop a block off the last floor recess; live tracking would drift the
+  geometry mid-job.
+- **The opening plane is scanned, not assumed.** `JobEngine.anchorFor` walks forward at body height
+  for the first non-replaceable block. That is what makes standing anywhere in the corridor work,
+  and what makes "you are facing an already-open room" a clean refusal rather than a wrong room.
+- **Progress is re-derived from the world, never assumed.** Carved iff `isAir()`. One verify sweep
+  then recovers from server rejections, falling gravel, other players' blocks, and unloaded chunks.
 - **Reach uses `canInteractWithBlock(pos, 0.0)`** — the server admits `1.0`, so ours is strictly
-  tighter and can never send a rejected action. Do **not** copy `bedrock-line-placement`'s
-  face-centre distance; it wrongly rejects reachable corner blocks here.
+  tighter and can never send a rejected action.
 - **Never change hotbar slots mid-break.** `sameDestroyTarget` calls `shouldCauseBlockBreakReset`, so
-  a slot change zeroes destroy progress. `HotbarSelector` is only called at phase boundaries.
-- **`retireAlreadyFinished` must run before steering.** A cell already in its final state is never a
-  valid target, so without it the queue never drains and auto-walk steers at it forever.
+  a slot change zeroes destroy progress. Backfill only runs when `currentTarget == null`, and
+  `tickCarving` swaps back to `HotbarSelector.miningSlot()` before driving another break.
+- **`retireAlreadyCarved` must run before steering.** A cell already air is never a valid target, so
+  without it the queue never drains and auto-walk steers at it forever.
 - **`ARMING` is not optional.** The player pressed Enter to send the command; without the wait the
   dead-man's switch fires on tick one, every time.
 
@@ -97,14 +127,15 @@ every movement update
 
 | File | Symbols | Purpose |
 |---|---|---|
-| [GridPos.java](src/main/java/com/jus144tice/mallroombuilder/core/GridPos.java) | record `(x,y,z)`; `plus`, `minus`, `offset(Facing,int)`, `lateral`, `withY`, `at(Facing,along,side,y)` | Minecraft-free block position. `at` is the facing-relative constructor the geometry classes describe every cell with. |
-| [Facing.java](src/main/java/com/jus144tice/mallroombuilder/core/Facing.java) | `SOUTH,WEST,NORTH,EAST` (**declaration order is MC's 2D data values**), `fromYaw`, `stepX/stepZ`, `left()`, `opposite()` | Cardinal direction. `fromYaw` reproduces `Direction.fromYRot` via `Math.floorMod`, so unnormalised player yaws work. Names match `net.minecraft.core.Direction` for name-based conversion. |
-| [MallSpec.java](src/main/java/com/jus144tice/mallroombuilder/core/MallSpec.java) | record `(roomCount, hallLength, coverDoorThreshold)`; `pitch()`, `hallCount()` | What to build. Validates in the compact constructor. |
-| [MallAnchor.java](src/main/java/com/jus144tice/mallroombuilder/core/MallAnchor.java) | record `(playerFeet, facing)`; `of`, `roomReference`, `floorPlateY`, `ceilingPlateY`, `cell(along,side,y)`, `alongOf`, `sideOf` | Where the mall goes. Floor Y = feet Y; interior ±2 laterally; room *i* at `feet + facing × i·pitch`. `alongOf`/`sideOf` invert `cell` by dot product. |
-| [RoomGeometry.java](src/main/java/com/jus144tice/mallroombuilder/core/RoomGeometry.java) | `INTERIOR_SIZE` (5), `ENVELOPE_SIZE` (7), `INTERIOR_RADIUS` (2), `ENVELOPE_RADIUS` (3); **`extremeCount`**; `interior`, `envelope`, `visibleSkin`, `framing` | **The framing rule lives in `extremeCount`**: count coordinates at an envelope extreme — 0 interior, 1 visible face plate, 2+ framing. Yields 125/343/150/68/218 exactly. |
-| [HallGeometry.java](src/main/java/com/jus144tice/mallroombuilder/core/HallGeometry.java) | `INTERIOR_RADIUS` (1), `ENVELOPE_RADIUS` (2); `gapStart/gapEnd`, `openingStart/openingEnd`, `interior`, `visibleSkin` | Reuses `extremeCount` with radius 2. **Opening span = gap + 2 planes**, which cuts the doorways through the room wall plates for free. `visibleSkin` adds the threshold strips when `coverDoorThreshold`. |
-| [MallLayout.java](src/main/java/com/jus144tice/mallroombuilder/core/MallLayout.java) | ctor; `air()`, `skin()`, `counts()`, **`mineOrder()`**, **`buildOrder()`**; private `sorted`, `key`, `unitOrdinal`, record `Keyed` | **The composer and single source of truth.** `skin.removeAll(air)` is the line that cuts doorways. `unitOrdinal` derives the unit from `along` **alone**, which is what guarantees a floor cell and the interior above it share a unit. |
-| [MallCounts.java](src/main/java/com/jus144tice/mallroombuilder/core/MallCounts.java) | record `(airCount, skinCount)`; `minedTotal()`, `stacksNeeded()` | Preview arithmetic. |
+| [GridPos.java](src/main/java/com/jus144tice/mallroombuilder/core/GridPos.java) | record `(x,y,z)`; `plus`, `minus`, `offset(Facing,int)`, `lateral`, `withY`, `at(Facing,along,side,y)` | Minecraft-free block position. `at` is the facing-relative constructor everything else describes cells with. |
+| [Facing.java](src/main/java/com/jus144tice/mallroombuilder/core/Facing.java) | `SOUTH,WEST,NORTH,EAST` (**declaration order is MC's 2D data values**), `fromYaw`, `stepX/stepZ`, `left()`, `opposite()` | `fromYaw` reproduces `Direction.fromYRot` via `Math.floorMod`, so unnormalised player yaws work. Names match `net.minecraft.core.Direction` for name-based conversion. |
+| [RoomPlacement.java](src/main/java/com/jus144tice/mallroombuilder/core/RoomPlacement.java) | record `(openingCentre, depth)`; `cell(d,s,y)`, `depthOf`, `sideOf`, `floorY`, `floorPlateY`, `ceilingPlateY` | One room's position and orientation. A room is *directed* — open at the front, walled at the back — so everything is d/s/dy relative to the opening. |
+| [MallSpec.java](src/main/java/com/jus144tice/mallroombuilder/core/MallSpec.java) | record `(bothSides, finishHallway, hallDepth)`; `roomCount()`, `oppositeOpeningOffset()` | What one job builds. `oppositeOpeningOffset` is `hallDepth + 1`: the corridor plus the two wall planes the openings occupy. |
+| [MallAnchor.java](src/main/java/com/jus144tice/mallroombuilder/core/MallAnchor.java) | record `(playerFeet, facing, openingDistance)`; `of`, `facedRoom()`, `oppositeRoom(spec)`, `floorPlateY`, `ceilingPlateY`, `cell`, `alongOf`, `sideOf` | Where the job goes. `openingDistance` comes from scanning, which is why standing anywhere in the corridor gives the same room. |
+| [RoomGeometry.java](src/main/java/com/jus144tice/mallroombuilder/core/RoomGeometry.java) | `INTERIOR_SIZE` (5), `INTERIOR_RADIUS` (2), `ENVELOPE_RADIUS` (3), `BACK_PLATE_DEPTH` (5); **`extremeCount(d,s,dy)`**; `interior`, `visibleSkin`, `framing`, `envelope` | **The whole framing rule is `extremeCount`.** `visibleSkin` is a legacy name for the five face recesses — they are carved, not skinned. |
+| [HallGeometry.java](src/main/java/com/jus144tice/mallroombuilder/core/HallGeometry.java) | `SEGMENT_RADIUS` (3); `interior(room,depth)`, `visibleSkin(room,depth)` | The corridor stretch fronting one slot. Spans `|s| <= 3`, one wider each way than the room, so consecutive slots tile without leaving an unfinished strip of floor under each pillar. |
+| [MallLayout.java](src/main/java/com/jus144tice/mallroombuilder/core/MallLayout.java) | ctor; `carve()`, `framing()`, `counts()`, **`mineOrder()`**; private `addRoom`, `addHall`, `keyFor`, record `SortKey` | **The composer and single source of truth.** Two disjoint sets: cells to mine, and cells to protect and backfill. `keyFor` encodes the ordering; units are corridor 0, faced room 1, opposite room 2. |
+| [MallCounts.java](src/main/java/com/jus144tice/mallroombuilder/core/MallCounts.java) | record `(carvedCount, framingCount)`; `minedTotal()`, `envelopeTotal()` | `minedTotal == carvedCount` because nothing is ever placed. |
 | [QueueCursor.java](src/main/java/com/jus144tice/mallroombuilder/core/QueueCursor.java) | `select`, `peek`, `complete`, `defer`, `requeue`, `sweep`, `outstanding`, `done/remaining/total`, `sweepsUsed`, `deferredCount` | Ordered work list with a deferral tail and a bounded sweep counter. Completion is always the caller's call against the world. |
 | [WalkVector.java](src/main/java/com/jus144tice/mallroombuilder/core/WalkVector.java) | record `(forward,left,jump)`, `STILL`, `toward(...)`, `isMoving()` | Inverts `Entity.getInputVector`'s rotation. Round-tripped against a reimplementation in the tests. |
 
@@ -112,13 +143,13 @@ every movement update
 
 | File | Symbols | Purpose |
 |---|---|---|
-| [JobEngine.java](src/main/java/com/jus144tice/mallroombuilder/client/JobEngine.java) | `INSTANCE`; `State` (IDLE/ARMING/CARVING/BUILDING/PAUSED_NO_MATERIAL); `start`, `abort`, `finish`, `tick`, `tickArming`, `tickCarving`, `tickBuilding`, `selectCarveTarget`, `canCarve`, `verifyCarve`, `beginBuildPhase`, `verifyBuild`, `steerOrStall`, **`retireAlreadyFinished`**, `safetyGate`, `touchesLiquid`, `checkLoaded`, `anchorFor`, `statusLine`, `progressLine` | **The state machine.** Owns all world I/O. `selectCarveTarget` holds the pedestal rule (skip the block underfoot until `stepOffTimeoutTicks`). |
+| [JobEngine.java](src/main/java/com/jus144tice/mallroombuilder/client/JobEngine.java) | `INSTANCE`; `State` (IDLE/ARMING/CARVING); `start`, `abort`, `finish`, `clear`, `tick`, `tickArming`, `tickCarving`, `selectCarveTarget`, `canCarve`, `verifyCarve`, **`watchFraming`**, **`tryBackfill`**, `steerOrStall`, **`retireAlreadyCarved`**, `safetyGate`, `touchesLiquid`, `checkLoaded`, **`anchorFor`**, `statusLine`, `progressLine` | **The state machine.** `selectCarveTarget` holds the pedestal rule (skip the block underfoot until `stepOffTimeoutTicks`). `anchorFor` is the wall scan and is static so `MallCommand.preview` shares it. |
 | [MineDriver.java](src/main/java/com/jus144tice/mallroombuilder/client/MineDriver.java) | `toBlockPos`, `inReach`, `isCarved`, `faceFromEye`, `drive`, `cancel` | `drive` is one `continueDestroyBlock` + `swing` per tick — that call self-starts, self-paces and self-completes, so there is no per-block state machine. |
-| [PlaceDriver.java](src/main/java/com/jus144tice/mallroombuilder/client/PlaceDriver.java) | record `Support(pos, face)` + `hitVec()`; `isPlaceable`, `findSupport`, `place` | Synthesizes a `BlockHitResult` on a neighbour's face and calls `useItemOn` — the `LineLockManager.tryReacharound` technique. `isPlaceable`'s `isUnobstructed` is the entire answer to "don't place a block inside the player". |
+| [PlaceDriver.java](src/main/java/com/jus144tice/mallroombuilder/client/PlaceDriver.java) | record `Support(pos, face)` + `hitVec()`; `isPlaceable`, `findSupport`, `place(mc, player, support, hand)` | Used **only** for framing backfill. Synthesizes a `BlockHitResult` on a neighbour's face and calls `useItemOn` — the `LineLockManager.tryReacharound` technique. |
 | [AutoWalk.java](src/main/java/com/jus144tice/mallroombuilder/client/AutoWalk.java) | `steerTo`, `stop`, `isSteering`, `tick`, `desiredWalk`, `wantsJump`, `onMovementInput` | Writes `Input`'s impulse and boolean fields from `MovementInputUpdateEvent`. Set the booleans too — `LocalPlayer` reads them after the event for sprint/jump. |
 | [InputWatch.java](src/main/java/com/jus144tice/mallroombuilder/client/InputWatch.java) | `watched`, `allReleased`, `arm`, `setExpectedSlot`, `expectedSlot`, `tripped`, `trippedKey`, `angleDelta` | The dead-man's switch. Trustworthy because the engine writes `Input` fields directly and **never** touches `KeyMapping` state, so `key*.isDown()` is never reading back our own writes. |
-| [HotbarSelector.java](src/main/java/com/jus144tice/mallroombuilder/client/HotbarSelector.java) | `buildItem`, `buildBlock`, `remember`, `ensureBuildBlock`, `selectBestTool`, `select`, `restore`, `forget` | Slot switching is a bare `Inventory.selected` write; `ensureHasSentCarriedItem()` syncs it. `select` also calls `InputWatch.setExpectedSlot` so our own write is not read as the player. |
-| [MallCommand.java](src/main/java/com/jus144tice/mallroombuilder/client/MallCommand.java) | `onRegisterClientCommands`, `specOf`, `preview`, `build`, `status`, `stop`, `feedback` | The `/mallroom` tree. **Never add `.requires(hasPermission(n))`** — client sources report permission 0 on servers, which makes the command silently vanish. |
+| [HotbarSelector.java](src/main/java/com/jus144tice/mallroombuilder/client/HotbarSelector.java) | `backfillItem`, `backfillBlock`, `remember`, `miningSlot`, `latchMiningSlot`, `onMiningSlot`, `selectMiningSlot`, **`backfillHand`**, `selectBackfillSlot`, `selectBestTool`, `restore`, `forget` | `backfillHand` checks the off hand first-class: a player keeping cobblestone there never triggers a hotbar swap, so backfill can never disturb a break. |
+| [MallCommand.java](src/main/java/com/jus144tice/mallroombuilder/client/MallCommand.java) | `onRegisterClientCommands`, `specOf`, `preview`, `build`, `status`, `stop`, `feedback` | `/mallroom build\|preview [both]`, `status`, `stop`. **Never add `.requires(hasPermission(n))`** — client sources report permission 0 on servers, which makes the command silently vanish. |
 | [ClientEvents.java](src/main/java/com/jus144tice/mallroombuilder/client/ClientEvents.java) | `onClientTickPost`, `lastDimension` | Ticks the engine; aborts on leaving the world or changing dimension (the anchor is world coordinates). |
 | [HudOverlay.java](src/main/java/com/jus144tice/mallroombuilder/client/HudOverlay.java) | `onRenderGui` | Progress readout. Not decoration — a job runs for minutes at a floor of ~5 ticks per block. |
 
@@ -127,27 +158,27 @@ every movement update
 | File | Symbols | Purpose |
 |---|---|---|
 | [MallRoomBuilder.java](src/main/java/com/jus144tice/mallroombuilder/MallRoomBuilder.java) | `MODID`, `LOGGER`, `debug(String)`, ctor | `@Mod(dist = Dist.CLIENT)`. Registers the CLIENT config and four game-bus listeners. |
-| [Config.java](src/main/java/com/jus144tice/mallroombuilder/Config.java) | `SPEC` + 26 values and matching null-safe getters; `safeGet` overloads | `config/mallroombuilder-client.toml`. Getters fall back to defaults if queried before load. |
+| [Config.java](src/main/java/com/jus144tice/mallroombuilder/Config.java) | `SPEC` + values and matching null-safe getters; `safeGet` overloads | `config/mallroombuilder-client.toml`. Getters fall back to defaults if queried before load. |
 | [neoforge.mods.toml](src/main/templates/META-INF/neoforge.mods.toml) | — | **Templated** (`src/main/templates`, expanded by `generateModMetadata`), so `mod_version` lives only in `gradle.properties`. `side = "CLIENT"`, **no `[[mixins]]`**. |
-| [mallroombuilder.png](src/main/resources/mallroombuilder.png) | — | Mod-list icon: a 7×7 cross-section, emerald face plates against neutral corner framing. Regenerate with `tools/make_icon.py` (Python + Pillow). |
+| [mallroombuilder.png](src/main/resources/mallroombuilder.png) | — | Mod-list icon: the 7x7 cross-section — emerald face recesses, dark interior, neutral corner framing. Regenerate with `tools/make_icon.py` (Python + Pillow). |
 
 ---
 
 ## Tests
 
-JUnit 5 on the moddev `unitTest` harness. `.\gradlew.bat test`. The geometry is where the value is —
-if a count changes, the mod is building something other than what was designed.
+JUnit 5 on the moddev `unitTest` harness. `.\gradlew.bat test`. 116 tests; the geometry is where the
+value is.
 
 | File | Covers |
 |---|---|
-| [RoomGeometryTest.java](src/test/java/com/jus144tice/mallroombuilder/core/RoomGeometryTest.java) | **125 / 343 / 218 / 150 / 68 / 275**; interior ∪ skin ∪ framing tiles the envelope exactly; every skin cell has exactly one extreme, every framing cell two or more |
-| [HallGeometryTest.java](src/test/java/com/jus144tice/mallroombuilder/core/HallGeometryTest.java) | per-slice **35 / 15 / 20 / 16 / 4**; opening = gap + 2; plates are 3 wide (a plate cell at side ±2 is a corner, hence framing); thresholds add 12 per hallway |
-| [MallLayoutTest.java](src/test/java/com/jus144tice/mallroombuilder/core/MallLayoutTest.java) | 1 room = 125/150/275; **2 rooms = 355 / 362 / 717**; doorways remove exactly 30; 10-block jamb; air ∩ skin = ∅ for every shape; framing untouched |
-| [MineOrderTest.java](src/test/java/com/jus144tice/mallroombuilder/core/MineOrderTest.java) | permutation of air ∪ skin; **no floor cell precedes the interior above it**; ceiling first and floor last within a unit; units run forward without interleaving; body top-down |
-| [BuildOrderTest.java](src/test/java/com/jus144tice/mallroombuilder/core/BuildOrderTest.java) | exactly `reverse(mineOrder ∩ skin)`; floor before ceiling; starts at the far end |
-| [FacingTest.java](src/test/java/com/jus144tice/mallroombuilder/core/FacingTest.java) | `fromYaw` against the vanilla formula for every degree in ±1080, including negatives and quadrant boundaries |
+| [RoomGeometryTest.java](src/test/java/com/jus144tice/mallroombuilder/core/RoomGeometryTest.java) | **125 interior / 125 recess / 44 framing / 294 envelope / 250 carved**; the partition is exact; **`onlyTheBackPlaneCountsOnTheDepthAxis`** and `theOpeningPlaneHasNoBackWall` guard the open front; each slice carves 45 of 49 leaving 4 corners |
+| [HallGeometryTest.java](src/test/java/com/jus144tice/mallroombuilder/core/HallGeometryTest.java) | 105 air + 42 plates at depth 3; sits entirely in front of the opening; never overlaps the room; one wider each way than the room so slots tile |
+| [MallLayoutTest.java](src/test/java/com/jus144tice/mallroombuilder/core/MallLayoutTest.java) | room alone 250; with corridor **397**; `both` **647 / 88**; the two rooms face each other 4 apart and never overlap; carve ∩ framing = ∅ for every shape |
+| [MineOrderTest.java](src/test/java/com/jus144tice/mallroombuilder/core/MineOrderTest.java) | permutation of the carve set; never queues framing; **every floor cell follows every non-floor cell**; **`aRoomIsCarvedFrontToBack`** (the anti-deadlock assertion); ceiling leads each slice, body top-down; corridor before room |
+| [MallAnchorTest.java](src/test/java/com/jus144tice/mallroombuilder/core/MallAnchorTest.java) | **`whereYouStandAcrossTheCorridorDoesNotShiftTheRoom`**; opposite room mirrors 4 back; `alongOf`/`sideOf` invert `cell` for every facing |
+| [FacingTest.java](src/test/java/com/jus144tice/mallroombuilder/core/FacingTest.java) | `fromYaw` against the vanilla formula for every degree in ±1080 |
 | [WalkVectorTest.java](src/test/java/com/jus144tice/mallroombuilder/core/WalkVectorTest.java) | round-trip through a reimplementation of `getInputVector` across yaws × directions |
-| [MallAnchorTest.java](src/test/java/com/jus144tice/mallroombuilder/core/MallAnchorTest.java), [GridPosTest.java](src/test/java/com/jus144tice/mallroombuilder/core/GridPosTest.java), [QueueCursorTest.java](src/test/java/com/jus144tice/mallroombuilder/core/QueueCursorTest.java), [MallCountsTest.java](src/test/java/com/jus144tice/mallroombuilder/core/MallCountsTest.java) | anchor arithmetic per facing incl. negatives; `alongOf`/`sideOf` invert `cell`; cursor defer/sweep/requeue semantics and the sweep bound |
+| [GridPosTest.java](src/test/java/com/jus144tice/mallroombuilder/core/GridPosTest.java), [QueueCursorTest.java](src/test/java/com/jus144tice/mallroombuilder/core/QueueCursorTest.java), [MallCountsTest.java](src/test/java/com/jus144tice/mallroombuilder/core/MallCountsTest.java) | position algebra; cursor defer/sweep/requeue semantics and the sweep bound |
 | [ConfigTest.java](src/test/java/com/jus144tice/mallroombuilder/ConfigTest.java) | spec paths and defaults; getters survive the un-loaded state; the safety defaults are the safe ones |
 
 **Nothing in `client/` is unit-tested** — it needs a live client. See the manual checklist in the
@@ -167,16 +198,16 @@ README, and keep it honest.
 
 - **Changing the geometry means editing `core/` and its tests only.** The client layer does not know
   the rules and must not learn them.
-- **`unitOrdinal` depends on `along` alone.** That is load-bearing for the "floor after body"
-  invariant. If you make it depend on Y, `MineOrderTest` will tell you — listen to it.
-- **`skin` is not 150 per room once rooms are joined.** Doorways subtract, hallways add. Ask
-  `MallLayout.counts()`; never assume a per-room figure.
-- **The ceiling-reach margin is thin.** The far ceiling corner is ~4.40 from a standing eye against a
-  4.5 default reach. Sneaking drops the eye to 1.27 and puts corners out of range — auto-walk
-  compensates, but this is the likeliest cause of a "it keeps shuffling around" report.
-- **Throughput is floored at ~5 ticks per block** by `destroyDelay`. A 717-block mall takes minutes.
+- **The front face is not an extreme.** This is the single easiest thing to get wrong, and it walls
+  the player in. `RoomGeometryTest` asserts it from both directions.
+- **Ordering is anti-deadlock, not just anti-gravel.** Whole-ceiling-first is correct for a room you
+  stand inside and *wrong* for an alcove carved from outside. If you touch `MallLayout.keyFor`,
+  `MineOrderTest.aRoomIsCarvedFrontToBack` is the assertion that matters.
+- **Backfill must never run mid-break.** A hotbar swap resets destroy progress to zero. The
+  `currentTarget == null` guard in `tickCarving` is what enforces it.
+- **Throughput is floored at ~5 ticks per block** by `destroyDelay`. A 397-block job takes minutes.
   That is why the HUD exists.
-- **Open-air jobs stall by design** — a skin cell with no solid neighbour is never placeable. The
-  sweep budget turns that into a clean stop rather than a spin.
+- **The player finishes one block lower than they started**, in the floor recess, with framing ledges
+  along the wall bases. That is correct and matches the hand-built rooms — not a bug.
 - **In-game behaviour is unverified.** The build is green and the mod loads, but nobody has played a
   job through end to end. Update the README checklist as items are confirmed.

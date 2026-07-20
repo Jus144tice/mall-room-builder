@@ -7,18 +7,18 @@ package com.jus144tice.mallroombuilder.core;
 /**
  * What a job will cost, for {@code /mallroom preview} and the HUD.
  *
- * @param airCount  cells that must end up as air
- * @param skinCount cells that must end up as the build block
+ * @param carvedCount  cells to mine
+ * @param framingCount cells left standing and watched for backfill
  */
-public record MallCounts(int airCount, int skinCount) {
+public record MallCounts(int carvedCount, int framingCount) {
 
-    /** Blocks to mine: every air cell plus every skin cell (the skin cavity is carved, then filled). */
+    /** Blocks to mine. Nothing is placed, so this is the whole job. */
     public int minedTotal() {
-        return airCount + skinCount;
+        return carvedCount;
     }
 
-    /** Build blocks needed, in full stacks, rounded up. */
-    public int stacksNeeded() {
-        return (skinCount + 63) / 64;
+    /** Every cell the job is aware of, carved or protected. */
+    public int envelopeTotal() {
+        return carvedCount + framingCount;
     }
 }

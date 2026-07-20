@@ -5,6 +5,7 @@
 package com.jus144tice.mallroombuilder.core;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.HashSet;
@@ -14,12 +15,12 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 /**
- * The room spec, made executable. If any count here changes, the mod is building something other
- * than what was designed.
+ * The room spec, made executable. If a count here changes, the mod is carving something other than
+ * what was designed.
  */
 class RoomGeometryTest {
 
-    private static final GridPos REF = new GridPos(100, 64, -250);
+    private static final RoomPlacement ROOM = new RoomPlacement(new GridPos(100, 64, -250), Facing.SOUTH);
 
     @Nested
     @DisplayName("the headline counts")
@@ -27,46 +28,65 @@ class RoomGeometryTest {
 
         @Test
         void interiorIs5Cubed() {
-            assertEquals(125, RoomGeometry.interior(REF).size());
+            assertEquals(125, RoomGeometry.interior(ROOM).size());
         }
 
         @Test
-        void envelopeIs7Cubed() {
-            assertEquals(343, RoomGeometry.envelope(REF).size());
+        void theFiveFaceRecessesAre125() {
+            // back 25 + two pillars 50 + ceiling 25 + floor 25
+            assertEquals(125, RoomGeometry.visibleSkin(ROOM).size());
         }
 
         @Test
-        void shellIs218() {
-            Set<GridPos> shell = new HashSet<>(RoomGeometry.envelope(REF));
-            shell.removeAll(RoomGeometry.interior(REF));
-            assertEquals(218, shell.size());
+        void framingIs44() {
+            assertEquals(44, RoomGeometry.framing(ROOM).size());
+            // 4 corner runs of 5 slices, plus the whole back-plane rim.
+            assertEquals(4 * 5 + (7 * 7 - 25), RoomGeometry.framing(ROOM).size());
         }
 
         @Test
-        void visibleSkinIs150() {
-            assertEquals(150, RoomGeometry.visibleSkin(REF).size());
+        void envelopeIs6By7By7() {
+            assertEquals(294, RoomGeometry.envelope(ROOM).size());
+            assertEquals(6 * 7 * 7, RoomGeometry.envelope(ROOM).size());
         }
 
         @Test
-        void framingIs68() {
-            // 12 edges of 5 cells each, plus 8 corners.
-            assertEquals(68, RoomGeometry.framing(REF).size());
-            assertEquals(12 * 5 + 8, RoomGeometry.framing(REF).size());
+        void carvedTotalIs250() {
+            int carved = RoomGeometry.interior(ROOM).size()
+                    + RoomGeometry.visibleSkin(ROOM).size();
+            assertEquals(250, carved);
+            assertEquals(294, carved + RoomGeometry.framing(ROOM).size());
+        }
+    }
+
+    @Nested
+    @DisplayName("the open front")
+    class OpenFront {
+
+        @Test
+        void theOpeningPlaneHasNoBackWall() {
+            // Every interior cell at depth 0 is carved -- there is no plate across the front.
+            for (int s = -2; s <= 2; s++) {
+                for (int dy = 0; dy <= 4; dy++) {
+                    assertEquals(0, RoomGeometry.extremeCount(0, s, dy), "d=0 s=" + s + " dy=" + dy);
+                }
+            }
         }
 
         @Test
-        void skinPlusFramingIsTheWholeShell() {
-            assertEquals(
-                    218,
-                    RoomGeometry.visibleSkin(REF).size()
-                            + RoomGeometry.framing(REF).size());
+        void onlyTheBackPlaneCountsOnTheDepthAxis() {
+            // If the front were an extreme too, the room would be walled in and skin would be 150.
+            for (int d = 0; d < RoomGeometry.BACK_PLATE_DEPTH; d++) {
+                assertEquals(0, RoomGeometry.extremeCount(d, 0, 0), "depth " + d + " must not be an extreme");
+            }
+            assertEquals(1, RoomGeometry.extremeCount(RoomGeometry.BACK_PLATE_DEPTH, 0, 0));
         }
 
         @Test
-        void minedPerIsolatedRoomIs275() {
-            int mined = RoomGeometry.interior(REF).size()
-                    + RoomGeometry.visibleSkin(REF).size();
-            assertEquals(275, mined);
+        void thePillarsReachTheOpeningPlane() {
+            // The visible pillar framing each opening starts at depth 0.
+            assertTrue(RoomGeometry.visibleSkin(ROOM).contains(ROOM.cell(0, 3, ROOM.floorY())));
+            assertTrue(RoomGeometry.visibleSkin(ROOM).contains(ROOM.cell(0, -3, ROOM.floorY())));
         }
     }
 
@@ -75,77 +95,120 @@ class RoomGeometryTest {
     class Partition {
 
         @Test
-        void interiorSkinAndFramingTileTheEnvelopeExactly() {
+        void interiorRecessesAndFramingTileTheEnvelope() {
             Set<GridPos> union = new HashSet<>();
-            union.addAll(RoomGeometry.interior(REF));
-            union.addAll(RoomGeometry.visibleSkin(REF));
-            union.addAll(RoomGeometry.framing(REF));
+            union.addAll(RoomGeometry.interior(ROOM));
+            union.addAll(RoomGeometry.visibleSkin(ROOM));
+            union.addAll(RoomGeometry.framing(ROOM));
 
-            assertEquals(RoomGeometry.envelope(REF), union);
-            // No double counting: the sizes must add up as well as the sets matching.
+            assertEquals(RoomGeometry.envelope(ROOM), union);
             assertEquals(
-                    343,
-                    RoomGeometry.interior(REF).size()
-                            + RoomGeometry.visibleSkin(REF).size()
-                            + RoomGeometry.framing(REF).size());
+                    294,
+                    RoomGeometry.interior(ROOM).size()
+                            + RoomGeometry.visibleSkin(ROOM).size()
+                            + RoomGeometry.framing(ROOM).size());
         }
 
         @Test
-        void interiorAndSkinAreDisjoint() {
-            Set<GridPos> both = new HashSet<>(RoomGeometry.interior(REF));
-            both.retainAll(RoomGeometry.visibleSkin(REF));
+        void interiorAndRecessesAreDisjoint() {
+            Set<GridPos> both = new HashSet<>(RoomGeometry.interior(ROOM));
+            both.retainAll(RoomGeometry.visibleSkin(ROOM));
             assertTrue(both.isEmpty());
         }
 
         @Test
-        void everySkinCellSitsAtExactlyOneEnvelopeExtreme() {
-            for (GridPos p : RoomGeometry.visibleSkin(REF)) {
-                GridPos d = p.minus(REF);
-                assertEquals(
-                        1,
-                        RoomGeometry.extremeCount(d.x(), d.y(), d.z(), RoomGeometry.ENVELOPE_RADIUS),
-                        "visible skin cell " + d + " should be on exactly one face plane");
+        void framingIsNeverAlsoCarved() {
+            Set<GridPos> carved = new HashSet<>(RoomGeometry.interior(ROOM));
+            carved.addAll(RoomGeometry.visibleSkin(ROOM));
+            assertTrue(RoomGeometry.framing(ROOM).stream().noneMatch(carved::contains));
+        }
+    }
+
+    @Nested
+    @DisplayName("the cross-section is a 7x7 with its corners left standing")
+    class CrossSection {
+
+        @Test
+        void eachInteriorSliceCarves45Of49() {
+            for (int d = 0; d < RoomGeometry.BACK_PLATE_DEPTH; d++) {
+                int carved = 0;
+                int framing = 0;
+                for (int s = -3; s <= 3; s++) {
+                    for (int dy = -1; dy <= 5; dy++) {
+                        if (RoomGeometry.extremeCount(d, s, dy) <= 1) {
+                            carved++;
+                        } else {
+                            framing++;
+                        }
+                    }
+                }
+                assertEquals(45, carved, "slice " + d);
+                assertEquals(4, framing, "slice " + d + ": only the four corners stay");
             }
         }
 
         @Test
-        void everyFramingCellSitsAtTwoOrThreeExtremes() {
-            for (GridPos p : RoomGeometry.framing(REF)) {
-                GridPos d = p.minus(REF);
-                int extremes = RoomGeometry.extremeCount(d.x(), d.y(), d.z(), RoomGeometry.ENVELOPE_RADIUS);
-                assertTrue(extremes >= 2, "framing cell " + d + " should be an edge or corner, got " + extremes);
+        void theFourCornersOfASliceAreTheFraming() {
+            for (int s : new int[] {-3, 3}) {
+                for (int dy : new int[] {-1, 5}) {
+                    assertEquals(2, RoomGeometry.extremeCount(2, s, dy), "corner s=" + s + " dy=" + dy);
+                }
             }
         }
     }
 
     @Nested
-    @DisplayName("vertical placement relative to the player")
-    class Vertical {
+    @DisplayName("placement in the world")
+    class Placement {
 
         @Test
-        void interiorStartsAtTheReferenceYAndIsFiveTall() {
-            Set<GridPos> interior = RoomGeometry.interior(REF);
-            assertTrue(interior.stream().allMatch(p -> p.y() >= REF.y() && p.y() <= REF.y() + 4));
-            assertTrue(interior.contains(REF), "the reference cell is the player's feet, inside the room");
+        void interiorSitsAtAndAboveTheFloorLevel() {
+            Set<GridPos> interior = RoomGeometry.interior(ROOM);
+            assertTrue(interior.stream().allMatch(p -> p.y() >= ROOM.floorY() && p.y() <= ROOM.floorY() + 4));
         }
 
         @Test
-        void envelopeSpansFloorPlateToCeilingPlate() {
-            Set<GridPos> envelope = RoomGeometry.envelope(REF);
-            assertTrue(envelope.stream().allMatch(p -> p.y() >= REF.y() - 1 && p.y() <= REF.y() + 5));
+        void theRecessesReachOneBelowAndFiveAbove() {
+            Set<GridPos> recesses = RoomGeometry.visibleSkin(ROOM);
+            assertTrue(recesses.stream().anyMatch(p -> p.y() == ROOM.floorPlateY()));
+            assertTrue(recesses.stream().anyMatch(p -> p.y() == ROOM.ceilingPlateY()));
+            assertEquals(63, ROOM.floorPlateY());
+            assertEquals(69, ROOM.ceilingPlateY());
         }
 
         @Test
-        void theBlockUnderTheReferenceIsFloorSkin() {
-            assertTrue(RoomGeometry.visibleSkin(REF).contains(REF.plus(0, -1, 0)));
+        void theOpeningCentreIsCarvedInterior() {
+            assertTrue(RoomGeometry.interior(ROOM).contains(ROOM.openingCentre()));
         }
-    }
 
-    @Test
-    void geometryIsTranslationInvariantIncludingNegativeCoordinates() {
-        GridPos other = new GridPos(-4000, -59, 7);
-        assertEquals(150, RoomGeometry.visibleSkin(other).size());
-        assertEquals(68, RoomGeometry.framing(other).size());
-        assertEquals(125, RoomGeometry.interior(other).size());
+        @Test
+        void nothingSitsInFrontOfTheOpening() {
+            Set<GridPos> all = RoomGeometry.envelope(ROOM);
+            assertFalse(all.contains(ROOM.cell(-1, 0, ROOM.floorY())), "the room never reaches into the hallway");
+        }
+
+        @Test
+        void geometryHoldsForEveryFacingAndNegativeCoordinates() {
+            for (Facing f : Facing.values()) {
+                RoomPlacement room = new RoomPlacement(new GridPos(-4000, -59, 7), f);
+                assertEquals(125, RoomGeometry.interior(room).size(), "facing " + f);
+                assertEquals(125, RoomGeometry.visibleSkin(room).size(), "facing " + f);
+                assertEquals(44, RoomGeometry.framing(room).size(), "facing " + f);
+            }
+        }
+
+        @Test
+        void depthAndSideInvertCell() {
+            for (Facing f : Facing.values()) {
+                RoomPlacement room = new RoomPlacement(new GridPos(12, 70, -34), f);
+                for (int d = 0; d <= 5; d++) {
+                    for (int s = -3; s <= 3; s++) {
+                        GridPos p = room.cell(d, s, 70);
+                        assertEquals(d, room.depthOf(p), "facing " + f);
+                        assertEquals(s, room.sideOf(p), "facing " + f);
+                    }
+                }
+            }
+        }
     }
 }

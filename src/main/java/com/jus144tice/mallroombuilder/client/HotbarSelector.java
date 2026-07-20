@@ -8,35 +8,38 @@ import com.jus144tice.mallroombuilder.Config;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.InteractionHand;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
 
 /**
- * Hotbar management for the build phase.
+ * Hotbar management.
  *
- * <p>Switching slots is a single field write — {@code Inventory.selected} is public, and
- * {@code MultiPlayerGameMode} calls {@code ensureHasSentCarriedItem()} at the head of
- * {@code useItemOn} and {@code continueDestroyBlock}, which syncs it to the server for us.</p>
+ * <p>Switching slots is a bare {@code Inventory.selected} write —
+ * {@code MultiPlayerGameMode.ensureHasSentCarriedItem()} runs at the head of
+ * {@code continueDestroyBlock} and {@code useItemOn} and syncs it for us.</p>
  *
- * <p><strong>Never switch slots mid-break.</strong> {@code sameDestroyTarget} consults
- * {@code shouldCauseBlockBreakReset}, so a slot change zeroes destroy progress. The engine only
- * calls in here at phase boundaries.</p>
+ * <p><strong>Never switch mid-break.</strong> {@code sameDestroyTarget} consults
+ * {@code shouldCauseBlockBreakReset}, so a slot change zeroes destroy progress. The engine tracks a
+ * {@link #miningSlot()} and only ever swaps away from it between blocks, for a backfill.</p>
  */
 public final class HotbarSelector {
 
     private static final int HOTBAR_SIZE = 9;
 
     private static int savedSlot = -1;
+    private static int miningSlot = -1;
 
     private HotbarSelector() {}
 
-    /** Resolves the configured build block id, falling back to cobblestone if it is nonsense. */
-    public static Item buildItem() {
-        ResourceLocation id = ResourceLocation.tryParse(Config.buildBlock());
+    /** Resolves the configured backfill block, falling back to cobblestone if it is nonsense. */
+    public static Item backfillItem() {
+        ResourceLocation id = ResourceLocation.tryParse(Config.backfillBlock());
         if (id == null) {
             return Items.COBBLESTONE;
         }
@@ -44,9 +47,9 @@ public final class HotbarSelector {
         return item == Items.AIR ? Items.COBBLESTONE : item;
     }
 
-    /** The block form of the build item, for the {@code isUnobstructed} collision check. */
-    public static Block buildBlock() {
-        return buildItem() instanceof BlockItem blockItem ? blockItem.getBlock() : Blocks.COBBLESTONE;
+    /** The block form of the backfill item, for the collision check before placing. */
+    public static Block backfillBlock() {
+        return backfillItem() instanceof BlockItem blockItem ? blockItem.getBlock() : Blocks.COBBLESTONE;
     }
 
     /** Remembers the player's slot so it can be restored when the job ends. */
@@ -56,19 +59,50 @@ public final class HotbarSelector {
         }
     }
 
+    /** The slot the job mines with. Everything swaps back to this before the next break. */
+    public static int miningSlot() {
+        return miningSlot;
+    }
+
+    /** Latches the current slot as the mining slot. Call at the carve phase boundary. */
+    public static void latchMiningSlot(LocalPlayer player) {
+        miningSlot = player.getInventory().selected;
+    }
+
+    public static boolean onMiningSlot(LocalPlayer player) {
+        return miningSlot < 0 || player.getInventory().selected == miningSlot;
+    }
+
+    public static void selectMiningSlot(LocalPlayer player) {
+        if (miningSlot >= 0) {
+            select(player, miningSlot);
+        }
+    }
+
     /**
-     * Selects a hotbar slot holding the build block.
+     * The hand already holding the backfill block, main preferred, or null.
      *
-     * @return false if the player has none, which pauses the job rather than failing it
+     * <p>Checking the off hand first-class is not a nicety: a player who keeps cobblestone there
+     * never triggers a hotbar swap at all, so backfill can never disturb a break.</p>
      */
-    public static boolean ensureBuildBlock(LocalPlayer player) {
-        Item wanted = buildItem();
-        if (player.getInventory().getSelected().getItem() == wanted) {
-            return true;
+    public static InteractionHand backfillHand(LocalPlayer player) {
+        Item wanted = backfillItem();
+        if (player.getMainHandItem().getItem() == wanted) {
+            return InteractionHand.MAIN_HAND;
         }
-        if (!Config.autoSelectBuildSlot()) {
-            return false;
+        if (player.getOffhandItem().getItem() == wanted) {
+            return InteractionHand.OFF_HAND;
         }
+        return null;
+    }
+
+    /**
+     * Selects a hotbar slot holding the backfill block.
+     *
+     * @return false if the player is not carrying any
+     */
+    public static boolean selectBackfillSlot(LocalPlayer player) {
+        Item wanted = backfillItem();
         for (int slot = 0; slot < HOTBAR_SIZE; slot++) {
             ItemStack stack = player.getInventory().getItem(slot);
             if (!stack.isEmpty() && stack.getItem() == wanted) {
@@ -83,9 +117,9 @@ public final class HotbarSelector {
      * Selects the hotbar slot whose tool digs {@code reference} fastest.
      *
      * <p>Off by default: the player picked which pickaxe to hold, and silently swapping it is the
-     * kind of helpfulness nobody asked for. Enable {@code autoSelectTool} to opt in.</p>
+     * kind of helpfulness nobody asked for.</p>
      */
-    public static void selectBestTool(LocalPlayer player, net.minecraft.world.level.block.state.BlockState reference) {
+    public static void selectBestTool(LocalPlayer player, BlockState reference) {
         if (!Config.autoSelectTool()) {
             return;
         }
@@ -113,10 +147,12 @@ public final class HotbarSelector {
             select(player, savedSlot);
         }
         savedSlot = -1;
+        miningSlot = -1;
     }
 
-    /** Forgets the saved slot without restoring it. */
+    /** Forgets saved state without restoring it. */
     public static void forget() {
         savedSlot = -1;
+        miningSlot = -1;
     }
 }

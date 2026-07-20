@@ -5,53 +5,58 @@
 package com.jus144tice.mallroombuilder.core;
 
 /**
- * Where the mall goes, derived from where the player stood when the command was issued.
+ * Where the job goes, derived from where the player stood and what they were looking at.
  *
- * <p><strong>This is a snapshot, taken once and never re-read.</strong> The player is about to be
- * walked around by the auto-walk driver and may fall a block off the last floor plate; if the
- * geometry tracked their live position it would drift mid-job. Freezing it here is what makes the
- * whole layout deterministic.</p>
+ * <p>You stand in the spine hallway and face the wall you want opened. Three things are frozen at
+ * that moment:</p>
  *
- * <p>Conventions, all relative to the player's feet block:</p>
  * <ul>
- *   <li><strong>Floor Y = feet Y.</strong> The interior occupies {@code y in [feetY, feetY+4]}, the
- *       floor plate sits at {@code feetY-1} (the block being stood on) and the ceiling plate at
- *       {@code feetY+5}. The envelope therefore spans 7 in Y.</li>
- *   <li><strong>Laterally centred on the player.</strong> The interior spans +/-2 and the envelope
- *       +/-3 from the feet block on both horizontal axes.</li>
- *   <li>Room <em>i</em> sits {@code i * pitch} blocks along {@code facing}. The player is standing
- *       inside room 0.</li>
+ *   <li><strong>Facing</strong>, snapped to a cardinal — the direction the room extends.</li>
+ *   <li><strong>Feet</strong>, floored. The room's floor is level with the hallway's, so the
+ *       interior occupies {@code y in [feetY, feetY+4]}, the floor plate sits at {@code feetY-1}
+ *       and the ceiling plate at {@code feetY+5}. Laterally the room is centred on you.</li>
+ *   <li><strong>Opening distance</strong> — how many blocks ahead the hallway wall is, found by
+ *       scanning rather than assumed, so it does not matter where across the 3-wide corridor you
+ *       happen to be standing.</li>
  * </ul>
  *
- * @param playerFeet the block containing the player's feet at command time
- * @param facing     the player's yaw snapped to the nearest cardinal
+ * <p>All three are a <strong>snapshot</strong>. The player is about to be walked around and may
+ * drop a block off the last floor plate; tracking them live would drift the geometry mid-job.</p>
  */
-public record MallAnchor(GridPos playerFeet, Facing facing) {
+public record MallAnchor(GridPos playerFeet, Facing facing, int openingDistance) {
 
-    /** Builds an anchor from a floored feet position and a raw (unnormalised) player yaw. */
-    public static MallAnchor of(int feetX, int feetY, int feetZ, float yaw) {
-        return new MallAnchor(new GridPos(feetX, feetY, feetZ), Facing.fromYaw(yaw));
+    public static MallAnchor of(int feetX, int feetY, int feetZ, float yaw, int openingDistance) {
+        return new MallAnchor(new GridPos(feetX, feetY, feetZ), Facing.fromYaw(yaw), openingDistance);
     }
 
-    /** The reference cell of room {@code index}: horizontally centred, at floor height. */
-    public GridPos roomReference(MallSpec spec, int index) {
-        return playerFeet.offset(facing, index * spec.pitch());
+    /** The room you are looking at. */
+    public RoomPlacement facedRoom() {
+        return new RoomPlacement(cell(openingDistance, 0, playerFeet.y()), facing);
     }
 
-    /** Y of the room floor plate — the block the player is standing on. */
+    /**
+     * The room directly opposite, across the corridor. Its opening plane is the far wall of the
+     * hallway and it extends the other way, so the two rooms mirror each other about the spine.
+     */
+    public RoomPlacement oppositeRoom(MallSpec spec) {
+        int along = openingDistance - spec.oppositeOpeningOffset();
+        return new RoomPlacement(cell(along, 0, playerFeet.y()), facing.opposite());
+    }
+
+    /** Y of the room and hallway floor plate — the block the player is standing on. */
     public int floorPlateY() {
         return playerFeet.y() - 1;
     }
 
-    /** Y of the room ceiling plate. */
+    /** Y of the ceiling plate. */
     public int ceilingPlateY() {
         return playerFeet.y() + RoomGeometry.INTERIOR_SIZE;
     }
 
     /**
-     * Converts a facing-relative cell to an absolute position.
+     * Converts an anchor-relative cell to an absolute position.
      *
-     * @param along blocks forward of the feet block along {@link #facing}
+     * @param along blocks ahead of the feet block along {@link #facing}
      * @param side  blocks to the left of the feet block
      * @param y     absolute world Y
      */
@@ -59,16 +64,13 @@ public record MallAnchor(GridPos playerFeet, Facing facing) {
         return playerFeet.at(facing, along, side, y);
     }
 
-    /**
-     * How many blocks forward of the anchor a cell sits. The inverse of {@link #cell}'s
-     * {@code along}; a dot product with the unit facing vector, so it is exact.
-     */
+    /** How many blocks ahead of the anchor a cell sits. Exact — a dot product with a unit vector. */
     public int alongOf(GridPos pos) {
         GridPos d = pos.minus(playerFeet);
         return d.x() * facing.stepX() + d.z() * facing.stepZ();
     }
 
-    /** How many blocks to the left of the anchor a cell sits. The inverse of {@link #cell}'s {@code side}. */
+    /** How many blocks to the left of the anchor a cell sits. */
     public int sideOf(GridPos pos) {
         GridPos d = pos.minus(playerFeet);
         Facing left = facing.left();

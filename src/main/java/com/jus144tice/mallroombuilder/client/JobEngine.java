@@ -12,7 +12,9 @@ import com.jus144tice.mallroombuilder.core.MallLayout;
 import com.jus144tice.mallroombuilder.core.MallSpec;
 import com.jus144tice.mallroombuilder.core.QueueCursor;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
@@ -21,29 +23,30 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.network.chat.Component;
 import net.minecraft.util.Mth;
-import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.level.block.Blocks;
 
 /**
- * The job state machine. Owns every world read and write; everything it decides is computed from
- * the pure {@code core} layer.
+ * The job state machine. Owns every world read and write.
  *
  * <pre>
- *   IDLE -&gt; ARMING -&gt; CARVING -&gt; BUILDING -&gt; IDLE
- *                        ^           |
- *                        |           v
- *                        +--- PAUSED_NO_MATERIAL
+ *   IDLE -&gt; ARMING -&gt; CARVING -&gt; IDLE
  *   any state -&gt; IDLE on abort
  * </pre>
  *
+ * <p><strong>The job is pure carving.</strong> A room is 250 blocks of mining — the 5x5x5 interior
+ * plus its five 1-block face recesses — and nothing is placed as part of building it. Decorating the
+ * recesses happens by hand afterwards. The only block this ever puts down is a backfill into framing
+ * that has gone missing.</p>
+ *
  * <p><strong>Why ARMING exists.</strong> The player pressed Enter to send the command, so the chat
  * screen is closing and keys are frequently still down. Starting immediately would trip the
- * dead-man's switch on tick one, every time. The engine waits for one clean tick with everything
- * released, then latches the look baseline.</p>
+ * dead-man's switch on tick one, every time.</p>
  *
  * <p><strong>Progress is re-derived, never assumed.</strong> A cell is carved iff the world says it
- * is air, and skinned iff the world says it is the build block. That single choice is what lets one
- * verify sweep recover from server rejections, falling gravel, blocks placed by other players, and
- * chunks that were not loaded — instead of four separate special cases.</p>
+ * is air. That single choice is what lets one verify sweep recover from server rejections, falling
+ * gravel, blocks placed by other players, and chunks that were not loaded — instead of four separate
+ * special cases.</p>
  */
 public final class JobEngine {
 
@@ -52,9 +55,7 @@ public final class JobEngine {
     public enum State {
         IDLE,
         ARMING,
-        CARVING,
-        BUILDING,
-        PAUSED_NO_MATERIAL
+        CARVING
     }
 
     private State state = State.IDLE;
@@ -62,14 +63,16 @@ public final class JobEngine {
     private QueueCursor cursor;
     private GridPos currentTarget;
 
+    private final Set<GridPos> backfill = new LinkedHashSet<>();
     private int blockTicks;
-    private int placeCooldown;
     private int armTicks;
     private int stepOffTicks;
     private int verifySweeps;
+    private int framingScanTicks;
+    private int placeCooldown;
     private int carved;
-    private int placed;
-    private boolean warnedNoMaterial;
+    private int backfilled;
+    private boolean warnedNoBackfillMaterial;
 
     private JobEngine() {}
 
@@ -101,7 +104,11 @@ public final class JobEngine {
             return "No player in world.";
         }
 
-        MallAnchor anchor = anchorFor(player);
+        MallAnchor anchor = anchorFor(player, level);
+        if (anchor == null) {
+            return "No wall within " + Config.maxWallScan()
+                    + " blocks ahead. Stand in the hallway facing the wall you want opened.";
+        }
         MallLayout candidate = new MallLayout(anchor, spec);
 
         int total = candidate.counts().minedTotal();
@@ -118,23 +125,25 @@ public final class JobEngine {
         this.cursor = new QueueCursor(candidate.mineOrder(), Config.maxVerifySweeps());
         this.state = State.ARMING;
         this.currentTarget = null;
+        this.backfill.clear();
         this.blockTicks = 0;
-        this.placeCooldown = 0;
         this.armTicks = 0;
         this.stepOffTicks = 0;
         this.verifySweeps = 0;
+        this.framingScanTicks = 0;
+        this.placeCooldown = 0;
         this.carved = 0;
-        this.placed = 0;
-        this.warnedNoMaterial = false;
+        this.backfilled = 0;
+        this.warnedNoBackfillMaterial = false;
 
         HotbarSelector.remember(player);
         say(
                 mc,
                 ChatFormatting.GRAY,
-                "Planning " + spec.roomCount() + " room(s) to the "
-                        + anchor.facing().name().toLowerCase() + ": "
-                        + candidate.counts().minedTotal() + " to mine, "
-                        + candidate.counts().skinCount() + " to place. Release all keys to begin.");
+                "Planning " + spec.roomCount() + " room(s) "
+                        + anchor.facing().name().toLowerCase() + ", opening "
+                        + anchor.openingDistance() + " ahead: " + total + " to mine, "
+                        + candidate.counts().framingCount() + " framing left standing. Release all keys to begin.");
         return null;
     }
 
@@ -152,16 +161,13 @@ public final class JobEngine {
             HotbarSelector.forget();
         }
         say(mc, ChatFormatting.YELLOW, "Stopped (" + reason + "). " + progressLine());
-        state = State.IDLE;
-        currentTarget = null;
-        layout = null;
-        cursor = null;
+        clear();
     }
 
     private void finish(Minecraft mc) {
-        LocalPlayer player = mc.player;
         AutoWalk.stop();
         MineDriver.cancel(mc);
+        LocalPlayer player = mc.player;
         if (player != null) {
             HotbarSelector.restore(player);
         }
@@ -169,12 +175,17 @@ public final class JobEngine {
         if (leftover > 0) {
             say(mc, ChatFormatting.YELLOW, "Finished with " + leftover + " block(s) unreachable. " + progressLine());
         } else {
-            say(mc, ChatFormatting.GREEN, "Mall complete. " + progressLine());
+            say(mc, ChatFormatting.GREEN, "Room carved. " + progressLine());
         }
+        clear();
+    }
+
+    private void clear() {
         state = State.IDLE;
         currentTarget = null;
         layout = null;
         cursor = null;
+        backfill.clear();
     }
 
     // --- The tick ----------------------------------------------------------
@@ -207,12 +218,7 @@ public final class JobEngine {
         }
 
         AutoWalk.tick(player);
-
-        switch (state) {
-            case CARVING -> tickCarving(mc, player, level);
-            case BUILDING, PAUSED_NO_MATERIAL -> tickBuilding(mc, player, level);
-            default -> {}
-        }
+        tickCarving(mc, player, level);
     }
 
     private void tickArming(Minecraft mc) {
@@ -222,7 +228,8 @@ public final class JobEngine {
             if (player != null) {
                 // Phase boundary: the only safe moment to touch the hotbar, since a slot change
                 // mid-break resets destroy progress to zero.
-                HotbarSelector.selectBestTool(player, net.minecraft.world.level.block.Blocks.STONE.defaultBlockState());
+                HotbarSelector.selectBestTool(player, Blocks.STONE.defaultBlockState());
+                HotbarSelector.latchMiningSlot(player);
             }
             state = State.CARVING;
             say(mc, ChatFormatting.GRAY, "Carving. Touch any key or move the mouse to stop.");
@@ -236,6 +243,11 @@ public final class JobEngine {
     // --- Carving -----------------------------------------------------------
 
     private void tickCarving(Minecraft mc, LocalPlayer player, ClientLevel level) {
+        if (placeCooldown > 0) {
+            placeCooldown--;
+        }
+        watchFraming(level);
+
         // Completion is a world read, not a bookkeeping assumption.
         if (currentTarget != null && MineDriver.isCarved(level, MineDriver.toBlockPos(currentTarget))) {
             cursor.complete(currentTarget);
@@ -244,7 +256,18 @@ public final class JobEngine {
             blockTicks = 0;
         }
 
+        // Backfill only ever happens between blocks. Swapping hotbar slots mid-break would reset
+        // destroy progress, so this must never run while a break is in flight.
+        if (currentTarget == null && tryBackfill(mc, player, level)) {
+            return;
+        }
+
         if (currentTarget == null) {
+            // A backfill may have left us holding cobblestone; get the pickaxe back before mining.
+            if (!HotbarSelector.onMiningSlot(player)) {
+                HotbarSelector.selectMiningSlot(player);
+                return;
+            }
             currentTarget = selectCarveTarget(player, level);
             blockTicks = 0;
         }
@@ -252,7 +275,7 @@ public final class JobEngine {
         if (currentTarget == null) {
             if (!cursor.hasPending() && !cursor.hasDeferred()) {
                 if (verifyCarve(level)) {
-                    beginBuildPhase(mc, player);
+                    finish(mc);
                 }
                 return;
             }
@@ -261,8 +284,7 @@ public final class JobEngine {
         }
 
         AutoWalk.stop();
-        BlockPos pos = MineDriver.toBlockPos(currentTarget);
-        MineDriver.drive(mc, player, pos);
+        MineDriver.drive(mc, player, MineDriver.toBlockPos(currentTarget));
 
         if (++blockTicks > Config.blockTimeoutTicks()) {
             MallRoomBuilder.debug("giving up on " + currentTarget + " after " + blockTicks + " ticks");
@@ -276,11 +298,11 @@ public final class JobEngine {
     /**
      * Picks the nearest workable cell in reach.
      *
-     * <p>The cell the player is standing on is skipped — that is the "pedestal" rule that keeps the
-     * player from digging the floor out from under themselves. It is deferred and collected on a
-     * later sweep, by which time they have walked forward. The one exception is the very last floor
-     * block of the mall, where there is nowhere left to walk: after {@code stepOffTimeoutTicks} the
-     * engine mines it anyway and the player drops exactly one block onto untouched stone.</p>
+     * <p>The cell the player is standing on is skipped — that is the "pedestal" rule that keeps them
+     * from digging the floor out from under themselves. It is deferred and collected on a later
+     * sweep, by which time they have walked forward. The exception is the last floor cells, where
+     * there is nowhere left to walk: after {@code stepOffTimeoutTicks} the engine mines it anyway and
+     * the player drops exactly one block onto untouched stone.</p>
      */
     private GridPos selectCarveTarget(LocalPlayer player, ClientLevel level) {
         BlockPos standing = player.blockPosition().below();
@@ -291,7 +313,6 @@ public final class JobEngine {
             stepOffTicks = 0;
             return chosen;
         }
-        // Nothing workable. If the only thing left in reach is the block underfoot, start the clock.
         GridPos underfoot =
                 cursor.select(p -> p.x() == standing.getX() && p.y() == standing.getY() && p.z() == standing.getZ());
         if (underfoot != null) {
@@ -307,7 +328,7 @@ public final class JobEngine {
             return false;
         }
         if (MineDriver.isCarved(level, pos)) {
-            return false; // already air; the completion pass will retire it
+            return false;
         }
         if (!allowStepOff && pos.equals(standing)) {
             return false;
@@ -321,12 +342,7 @@ public final class JobEngine {
     /** Re-scans the whole volume. @return true when nothing is left to carve. */
     private boolean verifyCarve(ClientLevel level) {
         List<GridPos> unfinished = new ArrayList<>();
-        for (GridPos p : layout.air()) {
-            if (!MineDriver.isCarved(level, MineDriver.toBlockPos(p))) {
-                unfinished.add(p);
-            }
-        }
-        for (GridPos p : layout.skin()) {
+        for (GridPos p : layout.carve()) {
             if (!MineDriver.isCarved(level, MineDriver.toBlockPos(p))) {
                 unfinished.add(p);
             }
@@ -344,112 +360,102 @@ public final class JobEngine {
         return false;
     }
 
-    // --- Building ----------------------------------------------------------
+    // --- Framing backfill --------------------------------------------------
 
-    private void beginBuildPhase(Minecraft mc, LocalPlayer player) {
-        cursor = new QueueCursor(layout.buildOrder(), Config.maxVerifySweeps());
-        verifySweeps = 0;
-        placeCooldown = 0;
-        currentTarget = null;
-        state = State.BUILDING;
-        say(
-                mc,
-                ChatFormatting.GRAY,
-                "Carved " + carved + " blocks. Placing " + layout.counts().skinCount() + ".");
-    }
-
-    private void tickBuilding(Minecraft mc, LocalPlayer player, ClientLevel level) {
-        if (!HotbarSelector.ensureBuildBlock(player)) {
-            if (!Config.pauseWhenOutOfMaterial()) {
-                abort(mc, "out of " + Config.buildBlock());
-                return;
-            }
-            if (!warnedNoMaterial) {
-                warnedNoMaterial = true;
-                say(mc, ChatFormatting.YELLOW, "Out of " + Config.buildBlock() + " — restock to resume.");
-            }
-            state = State.PAUSED_NO_MATERIAL;
-            AutoWalk.stop();
+    /**
+     * Periodically checks that the framing is still standing.
+     *
+     * <p>The mod never mines framing, but gravel falls, mobs happen, and a stray break happens. This
+     * is the one thing that ever puts a block back, and it is exactly the case the player described:
+     * cobblestone is only for repairing framing that went missing.</p>
+     */
+    private void watchFraming(ClientLevel level) {
+        if (!Config.autoBackfillFraming() || layout == null) {
             return;
         }
-        if (state == State.PAUSED_NO_MATERIAL) {
-            state = State.BUILDING;
-            warnedNoMaterial = false;
-            say(mc, ChatFormatting.GRAY, "Resuming.");
-        }
-
-        if (placeCooldown > 0) {
-            placeCooldown--;
+        if (++framingScanTicks < Config.framingScanInterval()) {
             return;
         }
-
-        BlockState buildState = HotbarSelector.buildBlock().defaultBlockState();
-        GridPos target = cursor.select(p -> {
+        framingScanTicks = 0;
+        for (GridPos p : layout.framing()) {
             BlockPos pos = MineDriver.toBlockPos(p);
-            return PlaceDriver.isPlaceable(level, player, pos, buildState)
-                    && PlaceDriver.findSupport(player, level, pos) != null;
-        });
-
-        if (target == null) {
-            if (!cursor.hasPending() && !cursor.hasDeferred()) {
-                if (verifyBuild(level)) {
-                    finish(mc);
+            if (level.isLoaded(pos) && level.getBlockState(pos).isAir()) {
+                if (backfill.add(p)) {
+                    MallRoomBuilder.debug("framing breach at " + p);
                 }
-                return;
             }
-            steerOrStall(mc);
-            return;
-        }
-
-        AutoWalk.stop();
-        BlockPos pos = MineDriver.toBlockPos(target);
-        PlaceDriver.Support support = PlaceDriver.findSupport(player, level, pos);
-        if (support == null) {
-            cursor.defer(target);
-            return;
-        }
-        if (PlaceDriver.place(mc, player, support)) {
-            cursor.complete(target);
-            placed++;
-            placeCooldown = Config.placeCooldownTicks();
-        } else {
-            cursor.defer(target);
         }
     }
 
-    /** Re-scans the skin. @return true when every skin cell holds the build block. */
-    private boolean verifyBuild(ClientLevel level) {
-        List<GridPos> unfinished = new ArrayList<>();
-        for (GridPos p : layout.skin()) {
-            BlockState actual = level.getBlockState(MineDriver.toBlockPos(p));
-            if (!actual.is(HotbarSelector.buildBlock())) {
-                unfinished.add(p);
+    /**
+     * Places one backfill block if anything is missing and reachable.
+     *
+     * @return true if this tick was consumed by backfill work
+     */
+    private boolean tryBackfill(Minecraft mc, LocalPlayer player, ClientLevel level) {
+        if (backfill.isEmpty() || placeCooldown > 0) {
+            return false;
+        }
+
+        var buildState = HotbarSelector.backfillBlock().defaultBlockState();
+        GridPos target = null;
+        PlaceDriver.Support support = null;
+        for (GridPos p : backfill) {
+            BlockPos pos = MineDriver.toBlockPos(p);
+            if (!level.getBlockState(pos).isAir()) {
+                target = p; // already fixed itself
+                support = null;
+                break;
+            }
+            if (!PlaceDriver.isPlaceable(level, player, pos, buildState)) {
+                continue;
+            }
+            PlaceDriver.Support candidate = PlaceDriver.findSupport(player, level, pos);
+            if (candidate != null) {
+                target = p;
+                support = candidate;
+                break;
             }
         }
-        if (unfinished.isEmpty()) {
-            return true;
+        if (target == null) {
+            return false;
         }
-        if (verifySweeps >= Config.maxVerifySweeps()) {
-            MallRoomBuilder.debug("build verify gave up with " + unfinished.size() + " left");
-            return true;
+        if (support == null) {
+            backfill.remove(target);
+            return false;
         }
-        verifySweeps++;
-        cursor.requeue(unfinished);
-        return false;
+
+        InteractionHand hand = HotbarSelector.backfillHand(player);
+        if (hand == null) {
+            if (!HotbarSelector.selectBackfillSlot(player)) {
+                if (!warnedNoBackfillMaterial) {
+                    warnedNoBackfillMaterial = true;
+                    say(
+                            mc,
+                            ChatFormatting.YELLOW,
+                            "Framing is missing but you have no " + Config.backfillBlock() + " to repair it with.");
+                }
+                backfill.clear();
+                return false;
+            }
+            return true; // slot switched this tick; place on the next one
+        }
+
+        if (PlaceDriver.place(mc, player, support, hand)) {
+            backfill.remove(target);
+            backfilled++;
+            placeCooldown = Config.placeCooldownTicks();
+            MallRoomBuilder.debug("backfilled framing at " + target);
+        }
+        return true;
     }
 
     // --- Shared helpers ----------------------------------------------------
 
-    /**
-     * Nothing is workable from here: either walk toward the next cell, or admit defeat.
-     *
-     * <p>Refusing to steer is the honest failure mode for a job aimed at open sky, where blocks have
-     * no support and never will.</p>
-     */
     private void steerOrStall(Minecraft mc) {
         ClientLevel level = mc.level;
         if (level != null) {
-            retireAlreadyFinished(level);
+            retireAlreadyCarved(level);
         }
 
         GridPos next = cursor.peek();
@@ -462,47 +468,28 @@ public final class JobEngine {
             return;
         }
 
-        // Nothing pending, so everything outstanding is deferred. Put it back and try once more.
         if (cursor.sweep()) {
             return;
         }
 
-        // Sweep budget spent with work still outstanding: stop rather than spin. This is the honest
-        // outcome for cells that can never be worked -- placements with no support, blocks behind
-        // bedrock, a job aimed at open sky.
         MallRoomBuilder.debug("sweep budget exhausted with " + cursor.remaining() + " outstanding");
         AutoWalk.stop();
-        LocalPlayer player = mc.player;
-        if (state == State.CARVING && player != null) {
-            beginBuildPhase(mc, player);
-        } else {
-            finish(mc);
-        }
+        finish(mc);
     }
 
     /**
-     * Retires outstanding cells that are already in their final state.
+     * Retires outstanding cells that are already air.
      *
-     * <p>Without this the queue can never drain. A cell that is already air is never a valid carve
-     * target, and one that already holds the build block is never a valid place target — so neither
-     * is ever selected, yet both stay outstanding, and the steering target would sit on one of them
-     * forever. Pre-existing air (a cave clipping the room), a block another player placed, or simply
-     * re-running a job over finished work all land here.
+     * <p>Without this the queue can never drain: a cell that is already air is never a valid target,
+     * yet stays outstanding, and the steering target would sit on one of them forever. Pre-existing
+     * air — a cave clipping the room, or re-running a job over finished work — lands here.</p>
      *
-     * <p>Only called when nothing workable is in reach, so the full scan is free — the engine has
-     * nothing else to do this tick.</p>
+     * <p>Only called when nothing workable is in reach, so the full scan is free.</p>
      */
-    private void retireAlreadyFinished(ClientLevel level) {
-        boolean carving = state == State.CARVING;
+    private void retireAlreadyCarved(ClientLevel level) {
         for (GridPos p : cursor.outstanding()) {
             BlockPos pos = MineDriver.toBlockPos(p);
-            if (!level.isLoaded(pos)) {
-                continue;
-            }
-            boolean done = carving
-                    ? MineDriver.isCarved(level, pos)
-                    : level.getBlockState(pos).is(HotbarSelector.buildBlock());
-            if (done) {
+            if (level.isLoaded(pos) && MineDriver.isCarved(level, pos)) {
                 cursor.complete(p);
             }
         }
@@ -532,31 +519,48 @@ public final class JobEngine {
     }
 
     private String checkLoaded(ClientLevel level, MallLayout candidate) {
-        for (GridPos p : candidate.air()) {
+        for (GridPos p : candidate.carve()) {
             if (!level.isLoaded(MineDriver.toBlockPos(p))) {
-                return "Part of that mall is in an unloaded chunk. Move closer or build fewer rooms.";
-            }
-        }
-        for (GridPos p : candidate.skin()) {
-            if (!level.isLoaded(MineDriver.toBlockPos(p))) {
-                return "Part of that mall is in an unloaded chunk. Move closer or build fewer rooms.";
+                return "Part of that room is in an unloaded chunk. Move closer.";
             }
         }
         return null;
     }
 
-    private static MallAnchor anchorFor(LocalPlayer player) {
-        return MallAnchor.of(
-                Mth.floor(player.getX()), Mth.floor(player.getY()), Mth.floor(player.getZ()), player.getYRot());
+    /**
+     * Snapshots the anchor, finding the hallway wall by scanning rather than assuming a fixed
+     * offset — so it does not matter where across the corridor the player is standing.
+     *
+     * @return null if there is no wall ahead, which is what catches "you are facing an open room"
+     */
+    public static MallAnchor anchorFor(LocalPlayer player, ClientLevel level) {
+        int feetX = Mth.floor(player.getX());
+        int feetY = Mth.floor(player.getY());
+        int feetZ = Mth.floor(player.getZ());
+        MallAnchor probe = MallAnchor.of(feetX, feetY, feetZ, player.getYRot(), 0);
+
+        // Scan at body height: a stray block on the floor should not read as the wall.
+        for (int distance = 1; distance <= Config.maxWallScan(); distance++) {
+            GridPos cell = probe.cell(distance, 0, feetY + 1);
+            BlockPos pos = new BlockPos(cell.x(), cell.y(), cell.z());
+            if (!level.isLoaded(pos)) {
+                return null;
+            }
+            if (!level.getBlockState(pos).canBeReplaced()) {
+                return new MallAnchor(probe.playerFeet(), probe.facing(), distance);
+            }
+        }
+        return null;
     }
 
     // --- Status ------------------------------------------------------------
 
     public String progressLine() {
+        String repairs = backfilled > 0 ? ", backfilled " + backfilled + " framing" : "";
         if (cursor == null) {
-            return "carved " + carved + ", placed " + placed + ".";
+            return "carved " + carved + repairs + ".";
         }
-        return "carved " + carved + ", placed " + placed + "; " + cursor.done() + "/" + cursor.total() + " this phase.";
+        return "carved " + carved + repairs + "; " + cursor.done() + "/" + cursor.total() + ".";
     }
 
     /** One-line status for the command and the HUD. */
@@ -565,8 +569,6 @@ public final class JobEngine {
             case IDLE -> "idle";
             case ARMING -> "waiting for you to release all keys";
             case CARVING -> "carving " + queueFraction();
-            case BUILDING -> "building " + queueFraction();
-            case PAUSED_NO_MATERIAL -> "paused: out of " + Config.buildBlock();
         };
     }
 
@@ -575,7 +577,8 @@ public final class JobEngine {
             return "";
         }
         String deferredNote = cursor.deferredCount() > 0 ? " (" + cursor.deferredCount() + " deferred)" : "";
-        return cursor.done() + "/" + cursor.total() + deferredNote;
+        String repairNote = backfill.isEmpty() ? "" : " [" + backfill.size() + " to backfill]";
+        return cursor.done() + "/" + cursor.total() + deferredNote + repairNote;
     }
 
     public MallLayout layout() {

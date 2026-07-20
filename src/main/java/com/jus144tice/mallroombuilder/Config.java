@@ -10,37 +10,34 @@ import net.neoforged.neoforge.common.ModConfigSpec;
  * Client config, stored in {@code config/mallroombuilder-client.toml}.
  *
  * <p>Every getter is null-safe: queried before the config has loaded, it returns the documented
- * default rather than throwing. The engine reads a handful of these per tick, which is nowhere near
- * hot enough to justify the baked-volatile-field pattern used elsewhere in this collection.</p>
+ * default rather than throwing.</p>
  */
 public final class Config {
 
     private static final ModConfigSpec.Builder BUILDER = new ModConfigSpec.Builder();
 
-    // --- What to build ------------------------------------------------------
+    // --- What to carve ------------------------------------------------------
 
     public static final ModConfigSpec.BooleanValue ENABLED = BUILDER.comment(
                     "Master switch. When false, /mallroom build refuses to start.")
             .define("enabled", true);
 
-    public static final ModConfigSpec.IntValue DEFAULT_ROOM_COUNT = BUILDER.comment(
-                    "Rooms to build when /mallroom build is run with no arguments.")
-            .defineInRange("defaultRoomCount", 1, 1, 32);
+    public static final ModConfigSpec.IntValue HALL_DEPTH = BUILDER.comment(
+                    "Width of the spine hallway, measured across the corridor. Normally 3.",
+                    "Also sets how far apart two facing rooms sit: hallDepth + 1.")
+            .defineInRange("hallDepth", 3, 1, 15);
 
-    public static final ModConfigSpec.IntValue DEFAULT_HALL_LENGTH = BUILDER.comment(
-                    "Hallway length between room envelopes, in blocks. Room pitch is 7 + this.")
-            .defineInRange("defaultHallLength", 5, 1, 64);
+    public static final ModConfigSpec.BooleanValue FINISH_HALLWAY = BUILDER.comment(
+                    "Also carve the stretch of corridor fronting the room.",
+                    "Usually already open (you are standing in it), so it costs nothing -- but it",
+                    "finishes the floor and ceiling recesses in front of a freshly opened room.")
+            .define("finishHallway", true);
 
-    public static final ModConfigSpec.ConfigValue<String> BUILD_BLOCK = BUILDER.comment(
-                    "Item used to skin the visible faces. Must be a block item you are carrying.")
-            .define("buildBlock", "minecraft:cobblestone");
-
-    public static final ModConfigSpec.BooleanValue COVER_DOOR_THRESHOLD = BUILDER.comment(
-                    "Cobble the floor and ceiling strips across each doorway.",
-                    "Those cells are technically framing (envelope edges), so the pure rule would leave",
-                    "them as stone -- but once the doorway is open you walk right over them and see them.",
-                    "Costs 6 extra blocks per doorway. Set false for the strict framing rule.")
-            .define("coverDoorThreshold", true);
+    public static final ModConfigSpec.IntValue MAX_WALL_SCAN = BUILDER.comment(
+                    "How far ahead to look for the hallway wall when working out where the room goes.",
+                    "If nothing solid turns up within this many blocks the command refuses, which is",
+                    "what catches 'you are facing an already-open room'.")
+            .defineInRange("maxWallScan", 6, 1, 32);
 
     // --- Movement -----------------------------------------------------------
 
@@ -88,28 +85,41 @@ public final class Config {
 
     public static final ModConfigSpec.IntValue STEP_OFF_TIMEOUT_TICKS = BUILDER.comment(
                     "How long to wait for you to step off a floor block before mining it anyway.",
-                    "Only matters for the very last floor block, where there is nowhere left to walk.",
+                    "Only matters for the last floor cells, where there is nowhere left to walk.",
                     "You drop exactly one block onto untouched stone -- no damage, no suffocation.")
             .defineInRange("stepOffTimeoutTicks", 40, 0, 200);
 
-    public static final ModConfigSpec.IntValue PLACE_COOLDOWN_TICKS = BUILDER.comment(
-                    "Ticks between placements. 4 matches vanilla's held-use cadence.")
-            .defineInRange("placeCooldownTicks", 4, 0, 20);
-
     public static final ModConfigSpec.IntValue MAX_VERIFY_SWEEPS = BUILDER.comment(
-                    "How many times to re-scan for unfinished work before giving up on a phase.",
+                    "How many times to re-scan for unfinished work before giving up.",
                     "Sweeps are what recover deferred blocks, fallen gravel and server rejections.")
             .defineInRange("maxVerifySweeps", 4, 0, 16);
 
     public static final ModConfigSpec.IntValue MAX_QUEUED_BLOCKS = BUILDER.comment(
-                    "Refuse a job larger than this. A safety net against a mistyped room count.")
+                    "Refuse a job larger than this. A safety net against a bad hallDepth.")
             .defineInRange("maxQueuedBlocks", 20000, 100, 200000);
 
-    // --- Inventory ----------------------------------------------------------
+    // --- Framing backfill ---------------------------------------------------
 
-    public static final ModConfigSpec.BooleanValue AUTO_SELECT_BUILD_SLOT = BUILDER.comment(
-                    "Switch to a hotbar slot holding the build block when the build phase starts.")
-            .define("autoSelectBuildSlot", true);
+    public static final ModConfigSpec.BooleanValue AUTO_BACKFILL_FRAMING = BUILDER.comment(
+                    "Watch the framing during a job and replace any cell that goes missing.",
+                    "The mod never mines framing, but gravel falls and mobs happen. Backfill runs",
+                    "between blocks, never mid-break -- switching hotbar slots mid-break would reset",
+                    "destroy progress to zero.")
+            .define("autoBackfillFraming", true);
+
+    public static final ModConfigSpec.ConfigValue<String> BACKFILL_BLOCK = BUILDER.comment(
+                    "Item used to backfill missing framing. Must be a block item you are carrying.")
+            .define("backfillBlock", "minecraft:cobblestone");
+
+    public static final ModConfigSpec.IntValue FRAMING_SCAN_INTERVAL = BUILDER.comment(
+                    "Ticks between framing integrity scans. Cheap -- a few dozen block reads.")
+            .defineInRange("framingScanInterval", 20, 1, 200);
+
+    public static final ModConfigSpec.IntValue PLACE_COOLDOWN_TICKS = BUILDER.comment(
+                    "Ticks between backfill placements. 4 matches vanilla's held-use cadence.")
+            .defineInRange("placeCooldownTicks", 4, 0, 20);
+
+    // --- Inventory ----------------------------------------------------------
 
     public static final ModConfigSpec.BooleanValue AUTO_SELECT_TOOL = BUILDER.comment(
                     "Switch to the fastest pickaxe in your hotbar before carving.",
@@ -120,11 +130,6 @@ public final class Config {
                     "Put the selected hotbar slot back where it was when the job ends.")
             .define("restoreHotbarSlotOnFinish", true);
 
-    public static final ModConfigSpec.BooleanValue PAUSE_WHEN_OUT_OF_MATERIAL = BUILDER.comment(
-                    "Pause and poll when you run out of the build block, rather than aborting.",
-                    "Restock and it picks up where it left off.")
-            .define("pauseWhenOutOfMaterial", true);
-
     // --- Safety -------------------------------------------------------------
 
     public static final ModConfigSpec.BooleanValue ABORT_ON_LIQUID = BUILDER.comment(
@@ -132,9 +137,8 @@ public final class Config {
                     "Stops a job from flooding or draining lava into the mall.")
             .define("abortOnLiquid", true);
 
-    public static final ModConfigSpec.BooleanValue ABORT_ON_LOW_HEALTH = BUILDER.comment(
-                    "Abort if health drops below minHealth, or on any damage taken.")
-            .define("abortOnLowHealth", true);
+    public static final ModConfigSpec.BooleanValue ABORT_ON_LOW_HEALTH =
+            BUILDER.comment("Abort if health drops below minHealth.").define("abortOnLowHealth", true);
 
     public static final ModConfigSpec.DoubleValue MIN_HEALTH = BUILDER.comment(
                     "Health floor, in half-hearts (20 = full). Below this the job aborts.")
@@ -143,7 +147,7 @@ public final class Config {
     // --- Feedback -----------------------------------------------------------
 
     public static final ModConfigSpec.BooleanValue SHOW_HUD_STATUS = BUILDER.comment(
-                    "Draw a progress overlay while a job is running. A full mall takes minutes.")
+                    "Draw a progress overlay while a job is running. A room takes minutes.")
             .define("showHudStatus", true);
 
     public static final ModConfigSpec.BooleanValue DEBUG_LOGGING = BUILDER.comment(
@@ -182,24 +186,16 @@ public final class Config {
         return safeGet(ENABLED, true);
     }
 
-    public static int defaultRoomCount() {
-        return safeGet(DEFAULT_ROOM_COUNT, 1);
+    public static int hallDepth() {
+        return safeGet(HALL_DEPTH, 3);
     }
 
-    public static int defaultHallLength() {
-        return safeGet(DEFAULT_HALL_LENGTH, 5);
+    public static boolean finishHallway() {
+        return safeGet(FINISH_HALLWAY, true);
     }
 
-    public static String buildBlock() {
-        try {
-            return BUILD_BLOCK.get();
-        } catch (IllegalStateException notLoadedYet) {
-            return "minecraft:cobblestone";
-        }
-    }
-
-    public static boolean coverDoorThreshold() {
-        return safeGet(COVER_DOOR_THRESHOLD, true);
+    public static int maxWallScan() {
+        return safeGet(MAX_WALL_SCAN, 6);
     }
 
     public static boolean autoWalkEnabled() {
@@ -238,10 +234,6 @@ public final class Config {
         return safeGet(STEP_OFF_TIMEOUT_TICKS, 40);
     }
 
-    public static int placeCooldownTicks() {
-        return safeGet(PLACE_COOLDOWN_TICKS, 4);
-    }
-
     public static int maxVerifySweeps() {
         return safeGet(MAX_VERIFY_SWEEPS, 4);
     }
@@ -250,8 +242,24 @@ public final class Config {
         return safeGet(MAX_QUEUED_BLOCKS, 20000);
     }
 
-    public static boolean autoSelectBuildSlot() {
-        return safeGet(AUTO_SELECT_BUILD_SLOT, true);
+    public static boolean autoBackfillFraming() {
+        return safeGet(AUTO_BACKFILL_FRAMING, true);
+    }
+
+    public static String backfillBlock() {
+        try {
+            return BACKFILL_BLOCK.get();
+        } catch (IllegalStateException notLoadedYet) {
+            return "minecraft:cobblestone";
+        }
+    }
+
+    public static int framingScanInterval() {
+        return safeGet(FRAMING_SCAN_INTERVAL, 20);
+    }
+
+    public static int placeCooldownTicks() {
+        return safeGet(PLACE_COOLDOWN_TICKS, 4);
     }
 
     public static boolean autoSelectTool() {
@@ -260,10 +268,6 @@ public final class Config {
 
     public static boolean restoreHotbarSlotOnFinish() {
         return safeGet(RESTORE_HOTBAR_SLOT_ON_FINISH, true);
-    }
-
-    public static boolean pauseWhenOutOfMaterial() {
-        return safeGet(PAUSE_WHEN_OUT_OF_MATERIAL, true);
     }
 
     public static boolean abortOnLiquid() {

@@ -14,133 +14,139 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
-/** Composition: rooms plus hallways, with air winning so doorways cut themselves. */
+/** Composition: one or two rooms budding off the spine, plus the corridor in front of them. */
 class MallLayoutTest {
 
-    private static final MallAnchor ANCHOR = MallAnchor.of(0, 64, 0, 0.0f); // SOUTH
+    /** Standing in a 3-wide corridor, 2 blocks from the wall, facing south. */
+    private static final MallAnchor ANCHOR = MallAnchor.of(0, 64, 0, 0.0f, 2);
 
-    private static MallLayout layout(int rooms, int hallLength, boolean thresholds) {
-        return new MallLayout(ANCHOR, new MallSpec(rooms, hallLength, thresholds));
+    private static MallLayout layout(boolean bothSides, boolean finishHallway) {
+        return new MallLayout(ANCHOR, new MallSpec(bothSides, finishHallway, 3));
     }
 
     @Nested
-    @DisplayName("a single room matches the isolated-room spec exactly")
+    @DisplayName("a single room")
     class SingleRoom {
 
         @Test
-        void airAndSkinAndMinedAre125_150_275() {
-            MallLayout l = layout(1, 5, true);
-            assertEquals(125, l.air().size());
-            assertEquals(150, l.skin().size());
-            assertEquals(275, l.counts().minedTotal());
+        void roomAloneIs250Carved() {
+            MallLayout l = layout(false, false);
+            assertEquals(250, l.carve().size());
+            assertEquals(44, l.framing().size());
         }
 
         @Test
-        void noHallwayIsGeneratedForOneRoom() {
-            assertEquals(0, new MallSpec(1, 5, true).hallCount());
+        void withTheCorridorItIs397() {
+            MallLayout l = layout(false, true);
+            assertEquals(250 + 147, l.carve().size());
+            assertEquals(397, l.counts().minedTotal());
+            assertEquals(44, l.framing().size());
+        }
+
+        @Test
+        void theCorridorAddsNoFraming() {
+            assertEquals(
+                    layout(false, false).framing().size(),
+                    layout(false, true).framing().size());
         }
     }
 
     @Nested
-    @DisplayName("two rooms joined by a hallway")
-    class TwoRooms {
+    @DisplayName("both sides of the spine")
+    class BothSides {
 
         @Test
-        void composedCountsAre355Air_362Skin_717Mined() {
-            MallLayout l = layout(2, 5, true);
-            assertEquals(355, l.air().size());
-            assertEquals(362, l.skin().size());
-            assertEquals(717, l.counts().minedTotal());
+        void twoRoomsPlusOneSharedCorridorIs647() {
+            MallLayout l = layout(true, true);
+            assertEquals(2 * 250 + 147, l.carve().size());
+            assertEquals(647, l.counts().minedTotal());
+            assertEquals(88, l.framing().size());
         }
 
         @Test
-        void airIsTwoInteriorsPlusTheTube() {
-            MallLayout l = layout(2, 5, true);
-            assertEquals(2 * 125 + 105, l.air().size());
+        void theRoomsFaceEachOtherAcrossTheCorridor() {
+            MallSpec spec = new MallSpec(true, true, 3);
+            RoomPlacement faced = ANCHOR.facedRoom();
+            RoomPlacement opposite = ANCHOR.oppositeRoom(spec);
+
+            assertEquals(ANCHOR.facing(), faced.depth());
+            assertEquals(ANCHOR.facing().opposite(), opposite.depth());
+            // Openings 4 apart: 3 planes of corridor between two wall planes.
+            assertEquals(4, ANCHOR.alongOf(faced.openingCentre()) - ANCHOR.alongOf(opposite.openingCentre()));
         }
 
         @Test
-        void doorwaysRemoveExactlyThirtySkinBlocks() {
-            // Two isolated rooms plus the hallway's own skin, before air subtraction.
-            int naive = 2 * 150 + 92;
-            assertEquals(392, naive);
-            assertEquals(naive - 30, layout(2, 5, true).skin().size(), "15 cells per pierced wall plate, twice");
+        void theTwoRoomsNeverOverlap() {
+            MallSpec spec = new MallSpec(true, true, 3);
+            Set<GridPos> a = new HashSet<>(RoomGeometry.envelope(ANCHOR.facedRoom()));
+            assertTrue(RoomGeometry.envelope(ANCHOR.oppositeRoom(spec)).stream().noneMatch(a::contains));
         }
 
         @Test
-        void eachPiercedWallPlateKeepsATenBlockJamb() {
-            MallLayout l = layout(2, 5, true);
-            // Room 0's far wall plate sits at along = 3. Of its 25 cells, 15 became doorway air.
-            long jamb = l.skin().stream()
-                    .filter(p -> ANCHOR.alongOf(p) == 3)
-                    .filter(p -> p.y() >= 64 && p.y() <= 68)
-                    .count();
-            assertEquals(10, jamb);
+        void theCorridorSitsExactlyBetweenThem() {
+            MallSpec spec = new MallSpec(true, true, 3);
+            Set<GridPos> hall = HallGeometry.interior(ANCHOR.facedRoom(), 3);
+            Set<GridPos> roomA = new HashSet<>(RoomGeometry.envelope(ANCHOR.facedRoom()));
+            Set<GridPos> roomB = new HashSet<>(RoomGeometry.envelope(ANCHOR.oppositeRoom(spec)));
+
+            assertTrue(hall.stream().noneMatch(roomA::contains));
+            assertTrue(hall.stream().noneMatch(roomB::contains));
+            // No gap either: every along between the two openings is accounted for.
+            for (GridPos p : hall) {
+                int along = ANCHOR.alongOf(p);
+                assertTrue(along >= -1 && along <= 1, "corridor plane at along " + along);
+            }
         }
     }
 
     @Nested
-    @DisplayName("invariants that must hold for every shape")
+    @DisplayName("invariants")
     class Invariants {
 
         @Test
-        void airAndSkinAreAlwaysDisjoint() {
-            for (int rooms = 1; rooms <= 4; rooms++) {
-                for (int hall = 1; hall <= 7; hall++) {
-                    MallLayout l = layout(rooms, hall, true);
-                    Set<GridPos> both = new HashSet<>(l.air());
-                    both.retainAll(l.skin());
-                    assertTrue(both.isEmpty(), "rooms=" + rooms + " hall=" + hall);
+        void framingAndCarveAreAlwaysDisjoint() {
+            for (boolean both : new boolean[] {false, true}) {
+                for (boolean hall : new boolean[] {false, true}) {
+                    MallLayout l = layout(both, hall);
+                    Set<GridPos> overlap = new HashSet<>(l.carve());
+                    overlap.retainAll(l.framing());
+                    assertTrue(overlap.isEmpty(), "both=" + both + " hall=" + hall);
                 }
             }
         }
 
         @Test
-        void framingIsNeverTouched() {
-            MallLayout l = layout(1, 5, true);
-            Set<GridPos> framing = RoomGeometry.framing(ANCHOR.roomReference(l.spec(), 0));
-            assertEquals(68, framing.size());
-            assertTrue(framing.stream()
-                    .noneMatch(p -> l.air().contains(p) || l.skin().contains(p)));
-        }
-
-        @Test
-        void adjacentRoomEnvelopesNeverOverlap() {
-            MallSpec s = new MallSpec(3, 1, true); // tightest legal spacing
-            Set<GridPos> seen = new HashSet<>();
-            for (int i = 0; i < s.roomCount(); i++) {
-                for (GridPos p : RoomGeometry.envelope(ANCHOR.roomReference(s, i))) {
-                    assertTrue(seen.add(p), "room envelopes overlap at " + p);
-                }
-            }
-        }
-
-        @Test
-        void countsGrowMonotonicallyWithRoomCount() {
-            int previous = 0;
-            for (int rooms = 1; rooms <= 6; rooms++) {
-                int mined = layout(rooms, 5, true).counts().minedTotal();
-                assertTrue(mined > previous, "rooms=" + rooms);
-                previous = mined;
-            }
+        void nothingIsEverPlacedSoTheCountIsJustTheCarve() {
+            MallLayout l = layout(true, true);
+            assertEquals(l.carve().size(), l.counts().minedTotal());
+            assertEquals(l.carve().size() + l.framing().size(), l.counts().envelopeTotal());
         }
 
         @Test
         void everyFacingProducesTheSameCounts() {
             for (Facing f : Facing.values()) {
-                MallLayout l = new MallLayout(new MallAnchor(new GridPos(-77, 12, 300), f), new MallSpec(3, 5, true));
-                assertEquals(585, l.air().size(), "facing " + f);
-                assertEquals(574, l.skin().size(), "facing " + f);
+                MallAnchor a = new MallAnchor(new GridPos(-77, 12, 300), f, 2);
+                MallLayout l = new MallLayout(a, new MallSpec(true, true, 3));
+                assertEquals(647, l.carve().size(), "facing " + f);
+                assertEquals(88, l.framing().size(), "facing " + f);
             }
         }
 
         @Test
-        void turningOffThresholdsRemovesTwelvePerHallway() {
-            assertEquals(
-                    24,
-                    layout(3, 5, true).skin().size()
-                            - layout(3, 5, false).skin().size(),
-                    "two hallways, 12 blocks each");
+        void aWiderCorridorPushesTheOppositeRoomFurtherBack() {
+            for (int depth = 1; depth <= 6; depth++) {
+                MallSpec spec = new MallSpec(true, true, depth);
+                RoomPlacement opposite = ANCHOR.oppositeRoom(spec);
+                assertEquals(2 - (depth + 1), ANCHOR.alongOf(opposite.openingCentre()), "hallDepth " + depth);
+            }
+        }
+
+        @Test
+        void theCarveSpansExactlyTheEnvelopeHeight() {
+            MallLayout l = layout(false, true);
+            assertTrue(l.carve().stream().allMatch(p -> p.y() >= 63 && p.y() <= 69));
+            assertEquals(63, ANCHOR.floorPlateY());
+            assertEquals(69, ANCHOR.ceilingPlateY());
         }
     }
 
@@ -149,21 +155,24 @@ class MallLayoutTest {
     class PlayerPosition {
 
         @Test
-        void thePlayerStandsInsideRoomZero() {
-            MallLayout l = layout(2, 5, true);
-            assertTrue(l.air().contains(ANCHOR.playerFeet()), "feet block is interior air");
-            assertTrue(l.skin().contains(ANCHOR.playerFeet().plus(0, -1, 0)), "standing on floor skin");
+        void thePlayerIsStandingInTheCorridorSegment() {
+            MallLayout l = layout(false, true);
+            assertTrue(l.carve().contains(ANCHOR.playerFeet()), "feet block is corridor air");
         }
 
         @Test
-        void theBlockAboveTheFeetIsAlsoInterior() {
-            assertTrue(layout(1, 5, true).air().contains(ANCHOR.playerFeet().plus(0, 1, 0)));
+        void theFloorUnderTheirFeetIsCarvedNotLeft() {
+            // The floor recess goes one below the walking surface, which is why the job ends with a
+            // one-block drop.
+            assertTrue(layout(false, true).carve().contains(ANCHOR.playerFeet().plus(0, -1, 0)));
         }
 
         @Test
-        void theCeilingPlateIsFiveAboveTheFeet() {
-            assertTrue(layout(1, 5, true).skin().contains(ANCHOR.playerFeet().plus(0, 5, 0)));
-            assertFalse(layout(1, 5, true).air().contains(ANCHOR.playerFeet().plus(0, 5, 0)));
+        void theRoomStartsWhereTheWallIs() {
+            MallLayout l = layout(false, false);
+            // openingDistance is 2, so the first carved room cell is 2 ahead.
+            assertTrue(l.carve().contains(ANCHOR.cell(2, 0, 64)));
+            assertFalse(l.carve().contains(ANCHOR.cell(1, 0, 64)), "the corridor is not the room");
         }
     }
 }

@@ -8,125 +8,103 @@ import java.util.LinkedHashSet;
 import java.util.Set;
 
 /**
- * One mall room: a 5x5x5 finished interior inside a 7x7x7 carved envelope.
- *
- * <p>A room is symmetric under 90-degree rotation, so none of this depends on which way the mall
- * runs — it is expressed directly in world axes relative to the room's reference cell.</p>
+ * One mall room: a 5x5x5 finished interior, open along its whole front face onto the spine hallway.
  *
  * <h2>The framing rule</h2>
  *
- * <p>The shell (envelope minus interior) is 218 blocks, but only 150 of them are ever <em>seen</em>
- * from inside the finished room: the six flat 5x5 face plates. The other 68 lie on the cube's 12
- * edges and 8 corners, hidden behind the plates from every interior viewpoint. Those are the
- * <strong>framing</strong>, and the whole point of this mod is that they are never mined.</p>
- *
- * <p>The test is delightfully simple. For a shell cell, count how many of its three coordinates sit
- * at an <em>extreme</em> of the envelope:</p>
+ * <p>Classify a cell by counting how many of its three coordinates sit at an <em>extreme</em> of the
+ * envelope:</p>
  *
  * <pre>
- *   0 extremes -&gt; interior
- *   1 extreme  -&gt; a flat face plate   (visible, mined and skinned)
- *   2 extremes -&gt; an edge             (framing, left alone)
- *   3 extremes -&gt; a corner            (framing, left alone)
+ *   0 extremes -&gt; interior       125   carved to air
+ *   1 extreme  -&gt; a flat plate   125   carved, then skinned
+ *   2 extremes -&gt; an edge         40 } 44 framing: never visible from inside,
+ *   3 extremes -&gt; a corner         4 }     so never mined, whatever it happens to be
+ *                                 ---
+ *   envelope 6 x 7 x 7          = 294
  * </pre>
  *
- * <p>This yields exactly 150 / 68 / 218, and {@link HallGeometry} reuses the identical predicate
- * for the hallway cross-section.</p>
+ * <p><strong>The front is not an extreme.</strong> Only the back plane counts on the depth axis,
+ * because the opening is a hole, not a wall — which is what makes a room five skinned faces rather
+ * than six. Get this wrong and the mod walls you in.</p>
+ *
+ * <p>The plates at {@code |side| == 3} are the pillars that frame each opening when seen from the
+ * hallway. Adjacent rooms each carry their own, so the pillar between two rooms reads 2 wide.</p>
  */
 public final class RoomGeometry {
 
-    /** Edge length of the finished interior. */
+    /** Edge length of the finished interior, and its depth from the opening. */
     public static final int INTERIOR_SIZE = 5;
 
-    /** Edge length of the carved envelope: the interior plus a 1-block skin on each side. */
-    public static final int ENVELOPE_SIZE = 7;
+    /** Half-width of the interior, along the spine. */
+    public static final int INTERIOR_RADIUS = 2;
 
-    /** Half-width of the interior, in blocks, from the reference cell. */
-    public static final int INTERIOR_RADIUS = INTERIOR_SIZE / 2; // 2
+    /** Half-width of the envelope: the interior plus a pillar on each side. */
+    public static final int ENVELOPE_RADIUS = 3;
 
-    /** Half-width of the envelope, in blocks, from the reference cell. */
-    public static final int ENVELOPE_RADIUS = ENVELOPE_SIZE / 2; // 3
+    /** Depth at which the back wall plate sits. The only extreme on the depth axis. */
+    public static final int BACK_PLATE_DEPTH = INTERIOR_SIZE;
 
     private RoomGeometry() {}
 
     /**
-     * True if a cell offset is at an envelope extreme on at least two axes — an edge or a corner,
-     * and therefore never visible from inside.
+     * How many envelope extremes a facing-relative cell sits at.
      *
-     * @param dx     horizontal offset from the reference cell
-     * @param dy     vertical offset from the floor (interior is 0..4, plates are -1 and 5)
-     * @param dz     horizontal offset from the reference cell
-     * @param radius half-width of the envelope on the horizontal axes
+     * @param d  depth from the opening plane, 0 (open) to 5 (back plate)
+     * @param s  offset along the spine, -3 to 3
+     * @param dy height above the walking surface, -1 (floor plate) to 5 (ceiling plate)
      */
-    public static int extremeCount(int dx, int dy, int dz, int radius) {
+    public static int extremeCount(int d, int s, int dy) {
         int n = 0;
-        if (Math.abs(dx) == radius) {
+        if (d == BACK_PLATE_DEPTH) {
+            n++;
+        }
+        if (Math.abs(s) == ENVELOPE_RADIUS) {
             n++;
         }
         if (dy == -1 || dy == INTERIOR_SIZE) {
-            n++;
-        }
-        if (Math.abs(dz) == radius) {
             n++;
         }
         return n;
     }
 
     /** The 125 air cells of the finished room. */
-    public static Set<GridPos> interior(GridPos reference) {
-        Set<GridPos> out = new LinkedHashSet<>();
-        for (int dy = 0; dy < INTERIOR_SIZE; dy++) {
-            for (int dx = -INTERIOR_RADIUS; dx <= INTERIOR_RADIUS; dx++) {
-                for (int dz = -INTERIOR_RADIUS; dz <= INTERIOR_RADIUS; dz++) {
-                    out.add(reference.plus(dx, dy, dz));
-                }
-            }
-        }
-        return out;
+    public static Set<GridPos> interior(RoomPlacement room) {
+        return collect(room, 0);
     }
 
-    /** All 343 cells of the carved envelope, interior included. */
-    public static Set<GridPos> envelope(GridPos reference) {
-        Set<GridPos> out = new LinkedHashSet<>();
-        for (int dy = -1; dy <= INTERIOR_SIZE; dy++) {
-            for (int dx = -ENVELOPE_RADIUS; dx <= ENVELOPE_RADIUS; dx++) {
-                for (int dz = -ENVELOPE_RADIUS; dz <= ENVELOPE_RADIUS; dz++) {
-                    out.add(reference.plus(dx, dy, dz));
-                }
-            }
-        }
-        return out;
+    /** The 125 cells that get skinned: back wall, two pillars, floor and ceiling plates. */
+    public static Set<GridPos> visibleSkin(RoomPlacement room) {
+        return collect(room, 1);
     }
 
-    /** The 150 shell cells visible from inside: the six flat 5x5 face plates. */
-    public static Set<GridPos> visibleSkin(GridPos reference) {
-        Set<GridPos> out = new LinkedHashSet<>();
-        forEachShellCell(reference, out, 1);
-        return out;
+    /** The 44 edge and corner cells. Never mined — whatever is already there stays. */
+    public static Set<GridPos> framing(RoomPlacement room) {
+        return collect(room, 2);
     }
 
-    /** The 68 shell cells on the envelope's edges and corners. Never mined. */
-    public static Set<GridPos> framing(GridPos reference) {
-        Set<GridPos> out = new LinkedHashSet<>();
-        forEachShellCell(reference, out, 2);
-        return out;
+    /** Every cell of the carved envelope, 294 of them. */
+    public static Set<GridPos> envelope(RoomPlacement room) {
+        return collect(room, -1);
     }
 
     /**
-     * Collects shell cells whose extreme count is exactly {@code wanted} (1 = visible face plate),
-     * or at least {@code wanted} when {@code wanted >= 2} (edges and corners together).
+     * @param wanted exact extreme count, or 2 for "two or more", or -1 for every cell
      */
-    private static void forEachShellCell(GridPos reference, Set<GridPos> out, int wanted) {
-        for (int dy = -1; dy <= INTERIOR_SIZE; dy++) {
-            for (int dx = -ENVELOPE_RADIUS; dx <= ENVELOPE_RADIUS; dx++) {
-                for (int dz = -ENVELOPE_RADIUS; dz <= ENVELOPE_RADIUS; dz++) {
-                    int extremes = extremeCount(dx, dy, dz, ENVELOPE_RADIUS);
-                    boolean match = (wanted == 1) ? extremes == 1 : extremes >= wanted;
+    private static Set<GridPos> collect(RoomPlacement room, int wanted) {
+        Set<GridPos> out = new LinkedHashSet<>();
+        int floorY = room.floorY();
+        for (int d = 0; d <= BACK_PLATE_DEPTH; d++) {
+            for (int s = -ENVELOPE_RADIUS; s <= ENVELOPE_RADIUS; s++) {
+                for (int dy = -1; dy <= INTERIOR_SIZE; dy++) {
+                    int extremes = extremeCount(d, s, dy);
+                    boolean match = wanted < 0 || (wanted == 2 ? extremes >= 2 : extremes == wanted);
                     if (match) {
-                        out.add(reference.plus(dx, dy, dz));
+                        out.add(room.cell(d, s, floorY + dy));
                     }
                 }
             }
         }
+        return out;
     }
 }
