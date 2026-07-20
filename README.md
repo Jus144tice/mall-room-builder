@@ -57,27 +57,43 @@ a room five faces rather than six, and getting it wrong would wall you in.
 
 | Job | Carved | Framing left |
 |---|---|---|
-| One room | 250 | 44 |
-| One room + corridor frontage | 397 | 44 |
-| `both` — two facing rooms + shared corridor | 647 | 88 |
+| `room` | 250 | 44 |
+| `room both` — two facing rooms | 500 | 88 |
+| `spine` — a 7 × 3 × 5 corridor segment | 105 | 0 |
+
+A **spine segment is a plain box** — no recesses, no framing. It's also the interior height only, so
+its floor stays where you're standing. That's deliberate: a room's floor recess is carved one *below*
+the walking surface so you can lay a finished floor into it by hand and end up level with the
+corridor. Carving the corridor floor too would drop the hallway a block and break the flush join.
 
 ## Usage
 
 ```
-/mallroom preview [both]     what it would cost — no side effects
-/mallroom build   [both]     carve it
-/mallroom status             current progress
-/mallroom stop               abort cleanly
+/mallroom room  [both]          carve a room off the spine
+/mallroom spine [length]        carve the next segment of corridor (default 7 long)
+
+/mallroom preview room  [both]  counts only — no side effects
+/mallroom preview spine [length]
+
+/mallroom status                current progress
+/mallroom stop                  abort cleanly
 ```
 
-Stand in the corridor **facing the wall you want opened**. Facing picks the side; add `both` to also
-carve the room directly opposite. The room is centred on you laterally, its floor is level with the
-corridor's, and the opening plane is found by **scanning forward for the first solid block** — so it
-doesn't matter where across the 3-wide corridor you're standing. If nothing solid turns up within 6
-blocks the command refuses, which is what catches "you're facing an already-open room".
+**One rule covers both jobs: stand facing the way you want to build, and the block directly in front
+of you is the first block of the job.**
 
-Everything is snapshotted at the moment you run it. You're about to be walked around, so tracking
-you live would drift the geometry mid-job.
+- `room` — stand on the spine at the **lateral centre** of the room you want, facing it. One step
+  forward would put you off the spine and inside the room. Add `both` to also carve the room
+  directly opposite.
+- `spine` — stand on the **centre lane** of the spine you're extending, facing along it. The segment
+  runs 7 forward, 3 wide, 5 tall.
+
+Nothing is read from the world; the geometry comes purely from your position and facing. That's what
+makes a **partial job resumable** — stand in the same block and run it again, and it re-derives
+exactly the same volume and picks up whatever's left.
+
+Everything is snapshotted when you run it. You're about to be walked around, so tracking you live
+would drift the geometry mid-job.
 
 ### How it mines
 
@@ -131,9 +147,8 @@ lands at `build/libs/mallroombuilder-<version>.jar`.
 
 | Key | Default | |
 |---|---|---|
-| `hallDepth` | `3` | corridor width; also sets how far apart two facing rooms sit |
-| `finishHallway` | `true` | also carve the corridor frontage (usually already open, so free) |
-| `maxWallScan` | `6` | how far ahead to look for the wall |
+| `hallDepth` | `3` | corridor width; sets how far apart two facing rooms sit |
+| `spineLength` | `7` | default length of `/mallroom spine` |
 | `autoWalkEnabled` | `true` | off = only mine what's already in reach, then stop |
 | `abortOnPlayerInput` | `true` | the dead-man's switch. Turning it off is unsupported |
 | `lookAbortDegrees` | `1.0` | mouse-look sensitivity of the switch |
@@ -143,21 +158,22 @@ lands at `build/libs/mallroombuilder-<version>.jar`.
 
 ## Verification status
 
-The geometry is covered by **116 unit tests** (`./gradlew test`) — every count above is asserted,
-along with the ordering invariants that keep the job from deadlocking on an unreachable ceiling or
+The geometry is covered by **120 unit tests** (`./gradlew test`) — every count above is asserted,
+along with the ordering invariants that keep a job from deadlocking on an unreachable ceiling or
 digging the floor out from under you. The mod is confirmed to load cleanly in a dev client.
 
 **The in-game behaviour has not been played through yet.** If you're the first to run it:
 
-- [ ] `/mallroom preview` in your corridor prints sane counts and the right direction
-- [ ] `preview` refuses when you face an already-open room
-- [ ] One room: 250 mined, all drops collected, durability consumed, break animation visible
+- [ ] `/mallroom preview room` and `preview spine` print sane counts and the right direction
+- [ ] `spine`: 105 mined, box lands exactly where you expected, next segment tiles onto it with no gap
+- [ ] `room`: 250 mined, all drops collected, durability consumed, break animation visible
 - [ ] The finished shape matches a hand-built room — recesses right, corner framing intact
+- [ ] **Resume works**: stop a room half-way, stand in the same block, run it again, it finishes
 - [ ] Dead-man's switch: tap W → "forward key"; nudge the mouse → "mouse look"; open inventory → "a screen was opened"; left-click → "attack button"
 - [ ] Auto-walk carries you into the room as the near slices open
-- [ ] Floors: you end one block lower, never fall further, never suffocate
+- [ ] Floors: you end one block lower inside the room, never fall further, never suffocate
 - [ ] Gravel above the ceiling → the framing watcher backfills anything it knocks out
-- [ ] `both` produces two rooms facing each other, correctly spaced
+- [ ] `room both` produces two rooms facing each other, correctly spaced
 - [ ] `/mallroom stop` mid-carve leaves no stuck cracking overlay
 - [ ] Hotbar restored afterwards; no mid-break slot switch resetting progress
 

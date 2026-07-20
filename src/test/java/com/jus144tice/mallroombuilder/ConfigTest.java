@@ -30,8 +30,7 @@ class ConfigTest {
     void valuePathsAreFlatAndNamedAsDocumented() {
         assertEquals(List.of("enabled"), Config.ENABLED.getPath());
         assertEquals(List.of("hallDepth"), Config.HALL_DEPTH.getPath());
-        assertEquals(List.of("finishHallway"), Config.FINISH_HALLWAY.getPath());
-        assertEquals(List.of("maxWallScan"), Config.MAX_WALL_SCAN.getPath());
+        assertEquals(List.of("spineLength"), Config.SPINE_LENGTH.getPath());
         assertEquals(List.of("autoWalkEnabled"), Config.AUTO_WALK_ENABLED.getPath());
         assertEquals(List.of("abortOnPlayerInput"), Config.ABORT_ON_PLAYER_INPUT.getPath());
         assertEquals(List.of("autoBackfillFraming"), Config.AUTO_BACKFILL_FRAMING.getPath());
@@ -42,8 +41,7 @@ class ConfigTest {
     void specDefaultsMatchTheDocumentedValues() {
         assertEquals(true, Config.ENABLED.getDefault());
         assertEquals(3, Config.HALL_DEPTH.getDefault());
-        assertEquals(true, Config.FINISH_HALLWAY.getDefault());
-        assertEquals(6, Config.MAX_WALL_SCAN.getDefault());
+        assertEquals(7, Config.SPINE_LENGTH.getDefault());
         assertEquals(1.0, Config.AUTO_WALK_SPEED.getDefault());
         assertEquals(1.0, Config.LOOK_ABORT_DEGREES.getDefault());
         assertEquals(60, Config.ARM_GRACE_TICKS.getDefault());
@@ -68,8 +66,7 @@ class ConfigTest {
     void gettersFallBackToDefaultsBeforeTheConfigLoads() {
         assertTrue(Config.enabled());
         assertEquals(3, Config.hallDepth());
-        assertTrue(Config.finishHallway());
-        assertEquals(6, Config.maxWallScan());
+        assertEquals(7, Config.spineLength());
         assertTrue(Config.autoWalkEnabled());
         assertEquals(1.0, Config.autoWalkSpeed());
         assertTrue(Config.autoWalkJump());
@@ -98,7 +95,7 @@ class ConfigTest {
     void gettersMirrorTheSpecDefaultsExactly() {
         assertEquals(Config.ENABLED.getDefault(), Config.enabled());
         assertEquals(Config.HALL_DEPTH.getDefault(), Config.hallDepth());
-        assertEquals(Config.MAX_WALL_SCAN.getDefault(), Config.maxWallScan());
+        assertEquals(Config.SPINE_LENGTH.getDefault(), Config.spineLength());
         assertEquals(Config.BACKFILL_BLOCK.getDefault(), Config.backfillBlock());
         assertEquals(Config.LOOK_ABORT_DEGREES.getDefault(), Config.lookAbortDegrees());
         assertEquals(Config.MIN_HEALTH.getDefault(), Config.minHealth());

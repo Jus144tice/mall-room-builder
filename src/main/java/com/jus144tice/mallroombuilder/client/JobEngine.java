@@ -104,11 +104,7 @@ public final class JobEngine {
             return "No player in world.";
         }
 
-        MallAnchor anchor = anchorFor(player, level);
-        if (anchor == null) {
-            return "No wall within " + Config.maxWallScan()
-                    + " blocks ahead. Stand in the hallway facing the wall you want opened.";
-        }
+        MallAnchor anchor = anchorFor(player);
         MallLayout candidate = new MallLayout(anchor, spec);
 
         int total = candidate.counts().minedTotal();
@@ -137,13 +133,17 @@ public final class JobEngine {
         this.warnedNoBackfillMaterial = false;
 
         HotbarSelector.remember(player);
+        String what = spec.kind() == MallSpec.Kind.SPINE
+                ? "spine segment " + spec.spineLength() + " long"
+                : spec.roomCount() + " room(s)";
+        String framingNote = candidate.counts().framingCount() > 0
+                ? ", " + candidate.counts().framingCount() + " framing left standing"
+                : "";
         say(
                 mc,
                 ChatFormatting.GRAY,
-                "Planning " + spec.roomCount() + " room(s) "
-                        + anchor.facing().name().toLowerCase() + ", opening "
-                        + anchor.openingDistance() + " ahead: " + total + " to mine, "
-                        + candidate.counts().framingCount() + " framing left standing. Release all keys to begin.");
+                "Planning " + what + " " + anchor.facing().name().toLowerCase() + ": " + total + " to mine"
+                        + framingNote + ". Release all keys to begin.");
         return null;
     }
 
@@ -173,9 +173,13 @@ public final class JobEngine {
         }
         int leftover = cursor == null ? 0 : cursor.remaining();
         if (leftover > 0) {
-            say(mc, ChatFormatting.YELLOW, "Finished with " + leftover + " block(s) unreachable. " + progressLine());
+            say(
+                    mc,
+                    ChatFormatting.YELLOW,
+                    "Finished with " + leftover + " block(s) unreachable. " + progressLine()
+                            + " Stand in the same spot and run it again to pick up the rest.");
         } else {
-            say(mc, ChatFormatting.GREEN, "Room carved. " + progressLine());
+            say(mc, ChatFormatting.GREEN, "Carved. " + progressLine());
         }
         clear();
     }
@@ -528,29 +532,17 @@ public final class JobEngine {
     }
 
     /**
-     * Snapshots the anchor, finding the hallway wall by scanning rather than assuming a fixed
-     * offset — so it does not matter where across the corridor the player is standing.
+     * Snapshots the anchor from the player's position and facing alone.
      *
-     * @return null if there is no wall ahead, which is what catches "you are facing an open room"
+     * <p>Nothing is read from the world. The job always starts at the very next block ahead, so the
+     * same standing position always describes the same volume — which is what lets a half-finished
+     * room be completed by simply standing in the same spot and running the command again. An
+     * earlier version scanned forward for the first solid block, and that broke on exactly that
+     * case: the scan sailed through the opening and anchored the room somewhere else.</p>
      */
-    public static MallAnchor anchorFor(LocalPlayer player, ClientLevel level) {
-        int feetX = Mth.floor(player.getX());
-        int feetY = Mth.floor(player.getY());
-        int feetZ = Mth.floor(player.getZ());
-        MallAnchor probe = MallAnchor.of(feetX, feetY, feetZ, player.getYRot(), 0);
-
-        // Scan at body height: a stray block on the floor should not read as the wall.
-        for (int distance = 1; distance <= Config.maxWallScan(); distance++) {
-            GridPos cell = probe.cell(distance, 0, feetY + 1);
-            BlockPos pos = new BlockPos(cell.x(), cell.y(), cell.z());
-            if (!level.isLoaded(pos)) {
-                return null;
-            }
-            if (!level.getBlockState(pos).canBeReplaced()) {
-                return new MallAnchor(probe.playerFeet(), probe.facing(), distance);
-            }
-        }
-        return null;
+    public static MallAnchor anchorFor(LocalPlayer player) {
+        return MallAnchor.of(
+                Mth.floor(player.getX()), Mth.floor(player.getY()), Mth.floor(player.getZ()), player.getYRot());
     }
 
     // --- Status ------------------------------------------------------------

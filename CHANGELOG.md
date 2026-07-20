@@ -4,6 +4,32 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-07-20
+
+### Added
+
+- **`/mallroom spine [length]`** — carves the next segment of corridor: 7 long, 3 wide, 5 tall, 105
+  blocks. A plain box with no recesses and no framing. It is the interior height only, so the
+  corridor floor stays where you are standing — which is what leaves a finished room flush with it,
+  since a room's floor recess is carved one *below* the walking surface.
+- `spineLength` config key (default 7).
+
+### Changed
+
+- **Anchoring is now fixed, not scanned.** Stand facing the way you want to build and **the block
+  directly in front of you is the first block of the job** — for a room you are laterally centred on
+  it, for a spine you are on the centre lane. Nothing is read from the world.
+
+  This makes **partial jobs resumable**: the same standing block always re-derives the same volume,
+  so stopping half-way and running the command again finishes the rest. The old forward scan broke on
+  exactly that case — it sailed through the opening of a half-carved room and anchored somewhere
+  else.
+- **`/mallroom build` is now `/mallroom room`**, and `preview` takes the job kind:
+  `/mallroom preview room [both]` / `/mallroom preview spine [length]`.
+- Removed `finishHallway` and `maxWallScan`, and deleted `HallGeometry` — the corridor is its own
+  command now, so a room job carves only the room. A room is **250 carved / 44 framing**; `both` is
+  **500 / 88**.
+
 ## [0.2.0] — 2026-07-20
 
 Rebuilt around how the mall is actually laid out, after seeing screenshots of the hand-built rooms.

@@ -19,15 +19,14 @@ import java.util.Set;
  * <p>Two sets come out of it, and they never overlap:</p>
  *
  * <ul>
- *   <li>{@link #carve()} — every cell to mine. The 5x5x5 interior plus the five 1-block face
- *       recesses (ceiling, back, both sides, floor), and the fronting stretch of corridor.</li>
- *   <li>{@link #framing()} — every cell to <em>protect</em>. Never queued for mining, and watched
- *       during the job so anything that goes missing can be backfilled.</li>
+ *   <li>{@link #carve()} — every cell to mine.</li>
+ *   <li>{@link #framing()} — every cell to <em>protect</em>. Never queued, and watched during the
+ *       job so anything that goes missing can be backfilled. Empty for a spine segment, which is a
+ *       plain box.</li>
  * </ul>
  *
- * <p>Nothing is ever placed as part of building a room. The mod carves the shell and the decorating
- * happens by hand afterwards; the only block it ever puts down is a backfill into framing that has
- * gone missing.</p>
+ * <p>Nothing is ever placed as part of carving. The mod cuts the shell and the decorating happens by
+ * hand; the only block it puts down is a backfill into framing that has gone missing.</p>
  */
 public final class MallLayout {
 
@@ -45,20 +44,16 @@ public final class MallLayout {
         Set<GridPos> framingCells = new LinkedHashSet<>();
         Map<GridPos, SortKey> sortKeys = new LinkedHashMap<>();
 
-        RoomPlacement faced = anchor.facedRoom();
-
-        // Unit 0 is the corridor: it is where the player is standing, so it is usually already open
-        // and retires immediately. Doing it first still matters for a fresh spur.
-        if (spec.finishHallway()) {
-            addHall(faced, spec.hallDepth(), 0, carveCells, sortKeys);
-        }
-        addRoom(faced, 1, carveCells, framingCells, sortKeys);
-        if (spec.bothSides()) {
-            addRoom(anchor.oppositeRoom(spec), 2, carveCells, framingCells, sortKeys);
+        if (spec.kind() == MallSpec.Kind.SPINE) {
+            addSpine(anchor.spineStart(), spec.spineLength(), sortKeys, carveCells);
+        } else {
+            addRoom(anchor.facedRoom(), 0, carveCells, framingCells, sortKeys);
+            if (spec.bothSides()) {
+                addRoom(anchor.oppositeRoom(spec), 1, carveCells, framingCells, sortKeys);
+            }
         }
 
-        // A cell carved for one unit is carved, whatever another unit calls it. Adjacent slots
-        // deliberately overlap by a block at the pillars.
+        // A cell carved for one unit is carved, whatever another unit calls it.
         framingCells.removeAll(carveCells);
 
         this.carve = Collections.unmodifiableSet(carveCells);
@@ -83,15 +78,10 @@ public final class MallLayout {
         framingCells.addAll(RoomGeometry.framing(room));
     }
 
-    private void addHall(
-            RoomPlacement faced, int depth, int unit, Set<GridPos> carveCells, Map<GridPos, SortKey> sortKeys) {
-        for (GridPos p : HallGeometry.interior(faced, depth)) {
+    private void addSpine(RoomPlacement start, int length, Map<GridPos, SortKey> sortKeys, Set<GridPos> carveCells) {
+        for (GridPos p : SpineGeometry.carve(start, length)) {
             carveCells.add(p);
-            sortKeys.putIfAbsent(p, keyFor(faced, unit, p));
-        }
-        for (GridPos p : HallGeometry.visibleSkin(faced, depth)) {
-            carveCells.add(p);
-            sortKeys.putIfAbsent(p, keyFor(faced, unit, p));
+            sortKeys.putIfAbsent(p, keyFor(start, 0, p));
         }
     }
 
@@ -122,17 +112,18 @@ public final class MallLayout {
      *
      * <p>Two things drive this, and both are load-bearing:</p>
      *
-     * <p><strong>Slice by slice, near to far.</strong> A room is an alcove carved into rock from
-     * outside, so the far end is neither reachable nor walkable until the near end is open. Doing
-     * the whole ceiling first — which is right for a room you stand in the middle of — deadlocks
-     * here: the far ceiling is about 5.25 blocks away, past the 4.5 reach, and you cannot walk in to
-     * close the gap. Within each slice the ceiling still goes before the body, so anything unstable
-     * overhead drops while there is still solid ground beneath it.</p>
+     * <p><strong>Slice by slice, near to far.</strong> Both a room and a spine segment are cut into
+     * rock from outside, so the far end is neither reachable nor walkable until the near end is open.
+     * Carving the whole ceiling first — which is right for a space you stand in the middle of —
+     * deadlocks here: the far ceiling is past the 4.5 reach and you cannot walk in to close the gap.
+     * Within each slice the ceiling still leads, so anything unstable overhead drops while there is
+     * still solid ground beneath it.</p>
      *
-     * <p><strong>Floor recesses last, across the whole job.</strong> Carving the floor drops the
+     * <p><strong>Floor recesses last, across the whole job.</strong> Carving a room's floor drops the
      * player a block, and a lower eye costs reach on every ceiling cell after it. Leaving all the
-     * floors to a final pass means the whole job is worked from the original standing height, and
-     * the one-block drop happens at the very end when nothing is left to reach.</p>
+     * floors to a final pass means the job is worked from the original standing height throughout and
+     * the one-block drop happens at the very end. A spine segment has no floor recess, so this pass is
+     * simply empty for it.</p>
      */
     public List<GridPos> mineOrder() {
         List<GridPos> out = new ArrayList<>(carve);
@@ -153,8 +144,6 @@ public final class MallLayout {
         int dy = pos.y() - frame.floorY();
 
         boolean isFloor = dy == -1;
-        // The corridor runs backwards from the opening, so flip its depth to keep "nearest first"
-        // meaningful in the same comparison.
         int slice = d >= 0 ? d : -d;
         // Ceiling leads each slice, then the body downwards.
         int tier = dy == RoomGeometry.INTERIOR_SIZE ? 0 : RoomGeometry.INTERIOR_SIZE - dy;

@@ -5,23 +5,45 @@
 package com.jus144tice.mallroombuilder.core;
 
 /**
- * What one job builds: the room you are facing, optionally its mirror across the hallway, and the
- * stretch of corridor between them.
+ * What one job carves: either a room off the spine, or the next segment of spine itself.
  *
- * @param bothSides    also build the room directly opposite, on the far side of the spine
- * @param finishHallway carve and skin the hallway segment fronting the room(s)
- * @param hallDepth    hallway width in blocks, measured across the spine. Normally 3.
+ * <p>Both start at the same place — the block directly in front of the player — so the two commands
+ * share an anchor and differ only in the volume they describe.</p>
+ *
+ * @param kind        room or spine
+ * @param bothSides   rooms only: also carve the room directly opposite, across the corridor
+ * @param hallDepth   corridor width in blocks. Sets how far back the opposite room sits.
+ * @param spineLength spine only: blocks along the run
  */
-public record MallSpec(boolean bothSides, boolean finishHallway, int hallDepth) {
+public record MallSpec(Kind kind, boolean bothSides, int hallDepth, int spineLength) {
+
+    public enum Kind {
+        ROOM,
+        SPINE
+    }
 
     public MallSpec {
         if (hallDepth < 1) {
             throw new IllegalArgumentException("hallDepth must be >= 1, got " + hallDepth);
         }
+        if (kind == Kind.SPINE && spineLength < 1) {
+            throw new IllegalArgumentException("spineLength must be >= 1, got " + spineLength);
+        }
     }
 
-    /** Rooms this job will build. */
+    public static MallSpec room(boolean bothSides, int hallDepth) {
+        return new MallSpec(Kind.ROOM, bothSides, hallDepth, 0);
+    }
+
+    public static MallSpec spine(int length, int hallDepth) {
+        return new MallSpec(Kind.SPINE, false, hallDepth, length);
+    }
+
+    /** Rooms this job will carve. Zero for a spine segment. */
     public int roomCount() {
+        if (kind != Kind.ROOM) {
+            return 0;
+        }
         return bothSides ? 2 : 1;
     }
 

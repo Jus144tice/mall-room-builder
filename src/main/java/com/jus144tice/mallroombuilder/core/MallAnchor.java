@@ -5,50 +5,63 @@
 package com.jus144tice.mallroombuilder.core;
 
 /**
- * Where the job goes, derived from where the player stood and what they were looking at.
+ * Where the job goes, derived purely from where the player is standing and which way they face.
  *
- * <p>You stand in the spine hallway and face the wall you want opened. Three things are frozen at
- * that moment:</p>
+ * <p><strong>Nothing is inferred from the world.</strong> The rule is fixed: you stand on the spine,
+ * facing the way you want to build, and <em>the block directly in front of you is the first block of
+ * the job</em>. For a room you are laterally centred on it; for a spine segment you are on the centre
+ * lane.</p>
  *
- * <ul>
- *   <li><strong>Facing</strong>, snapped to a cardinal — the direction the room extends.</li>
- *   <li><strong>Feet</strong>, floored. The room's floor is level with the hallway's, so the
- *       interior occupies {@code y in [feetY, feetY+4]}, the floor plate sits at {@code feetY-1}
- *       and the ceiling plate at {@code feetY+5}. Laterally the room is centred on you.</li>
- *   <li><strong>Opening distance</strong> — how many blocks ahead the hallway wall is, found by
- *       scanning rather than assumed, so it does not matter where across the 3-wide corridor you
- *       happen to be standing.</li>
- * </ul>
+ * <p>That determinism is the whole point. An earlier version scanned forward for the first solid
+ * block, which broke the moment a room was half-carved — the scan would sail through the opening and
+ * anchor the room somewhere else. With a fixed offset the same standing position always describes the
+ * same volume, so a partial job can simply be re-run to finish it.</p>
  *
- * <p>All three are a <strong>snapshot</strong>. The player is about to be walked around and may
- * drop a block off the last floor plate; tracking them live would drift the geometry mid-job.</p>
+ * <p>Vertically, the room interior occupies {@code y in [feetY, feetY+4]}, its floor recess sits at
+ * {@code feetY-1} and its ceiling recess at {@code feetY+5}. A spine segment is the interior height
+ * only — its floor stays where you are standing, which is what leaves a finished room flush with the
+ * corridor once you lay the room's floor in by hand.</p>
+ *
+ * <p>The anchor is a <strong>snapshot</strong>. The player is about to be walked around and will drop
+ * a block into the floor recess; tracking them live would drift the geometry mid-job.</p>
  */
-public record MallAnchor(GridPos playerFeet, Facing facing, int openingDistance) {
+public record MallAnchor(GridPos playerFeet, Facing facing) {
 
-    public static MallAnchor of(int feetX, int feetY, int feetZ, float yaw, int openingDistance) {
-        return new MallAnchor(new GridPos(feetX, feetY, feetZ), Facing.fromYaw(yaw), openingDistance);
+    /**
+     * How far ahead a job starts: always the very next block. Standing on the spine facing a room,
+     * one step forward would put you off the spine and inside it.
+     */
+    public static final int START_OFFSET = 1;
+
+    public static MallAnchor of(int feetX, int feetY, int feetZ, float yaw) {
+        return new MallAnchor(new GridPos(feetX, feetY, feetZ), Facing.fromYaw(yaw));
     }
 
-    /** The room you are looking at. */
+    /** The room you are facing. Its opening plane is the block directly in front of you. */
     public RoomPlacement facedRoom() {
-        return new RoomPlacement(cell(openingDistance, 0, playerFeet.y()), facing);
+        return new RoomPlacement(cell(START_OFFSET, 0, playerFeet.y()), facing);
     }
 
     /**
      * The room directly opposite, across the corridor. Its opening plane is the far wall of the
-     * hallway and it extends the other way, so the two rooms mirror each other about the spine.
+     * spine and it extends the other way, so the two rooms mirror each other.
      */
     public RoomPlacement oppositeRoom(MallSpec spec) {
-        int along = openingDistance - spec.oppositeOpeningOffset();
+        int along = START_OFFSET - spec.oppositeOpeningOffset();
         return new RoomPlacement(cell(along, 0, playerFeet.y()), facing.opposite());
     }
 
-    /** Y of the room and hallway floor plate — the block the player is standing on. */
+    /** The spine segment ahead of you, starting at the very next block. */
+    public RoomPlacement spineStart() {
+        return new RoomPlacement(cell(START_OFFSET, 0, playerFeet.y()), facing);
+    }
+
+    /** Y of a room's floor recess — one below the surface you are standing on. */
     public int floorPlateY() {
         return playerFeet.y() - 1;
     }
 
-    /** Y of the ceiling plate. */
+    /** Y of a room's ceiling recess. */
     public int ceilingPlateY() {
         return playerFeet.y() + RoomGeometry.INTERIOR_SIZE;
     }

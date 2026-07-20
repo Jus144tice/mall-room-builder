@@ -9,65 +9,71 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import org.junit.jupiter.api.Test;
 
-/** Anchor arithmetic: where the room lands relative to where the player was standing and looking. */
+/** Anchor arithmetic: everything follows from where you stand and which way you look. */
 class MallAnchorTest {
 
-    private static final MallSpec SPEC = new MallSpec(true, true, 3);
+    @Test
+    void aJobAlwaysStartsAtTheVeryNextBlock() {
+        assertEquals(1, MallAnchor.START_OFFSET);
+        MallAnchor a = MallAnchor.of(0, 64, 0, 0.0f); // facing SOUTH (+Z)
+        assertEquals(new GridPos(0, 64, 1), a.facedRoom().openingCentre());
+        assertEquals(new GridPos(0, 64, 1), a.spineStart().openingCentre());
+    }
 
     @Test
-    void theFacedRoomOpensWhereTheWallWasFound() {
-        MallAnchor a = MallAnchor.of(0, 64, 0, 0.0f, 2); // facing SOUTH (+Z)
-        assertEquals(new GridPos(0, 64, 2), a.facedRoom().openingCentre());
-        assertEquals(Facing.SOUTH, a.facedRoom().depth());
+    void roomAndSpineShareTheSameStartingPoint() {
+        MallAnchor a = MallAnchor.of(-12, 70, 33, 90.0f);
+        assertEquals(a.facedRoom().openingCentre(), a.spineStart().openingCentre());
+        assertEquals(a.facedRoom().depth(), a.spineStart().depth());
+    }
+
+    @Test
+    void nothingIsReadFromTheWorldSoTheGeometryIsReproducible() {
+        // Two anchors built the same way must be identical -- this is what makes a partial job
+        // resumable by standing in the same spot and running the command again.
+        assertEquals(MallAnchor.of(4, 64, -9, 0.0f), MallAnchor.of(4, 64, -9, 0.0f));
+        assertEquals(
+                MallAnchor.of(4, 64, -9, 0.0f).facedRoom(),
+                MallAnchor.of(4, 64, -9, 44.0f).facedRoom(),
+                "any yaw snapping to the same cardinal gives the same room");
     }
 
     @Test
     void theOppositeRoomMirrorsAcrossTheCorridor() {
-        MallAnchor a = MallAnchor.of(0, 64, 0, 0.0f, 2);
-        RoomPlacement opposite = a.oppositeRoom(SPEC);
-        // 3 planes of corridor between two wall planes: openings 4 apart.
-        assertEquals(new GridPos(0, 64, -2), opposite.openingCentre());
+        MallAnchor a = MallAnchor.of(0, 64, 0, 0.0f);
+        RoomPlacement opposite = a.oppositeRoom(MallSpec.room(true, 3));
+        // 3 lanes of corridor between two wall planes: openings 4 apart.
+        assertEquals(new GridPos(0, 64, -3), opposite.openingCentre());
         assertEquals(Facing.NORTH, opposite.depth());
     }
 
     @Test
     void oppositeOffsetTracksTheCorridorWidth() {
         for (int depth = 1; depth <= 8; depth++) {
-            assertEquals(depth + 1, new MallSpec(true, true, depth).oppositeOpeningOffset(), "hallDepth " + depth);
+            assertEquals(depth + 1, MallSpec.room(true, depth).oppositeOpeningOffset(), "hallDepth " + depth);
         }
-    }
-
-    @Test
-    void whereYouStandAcrossTheCorridorDoesNotShiftTheRoom() {
-        // The opening distance comes from scanning for the wall, not from a fixed offset. Three
-        // players standing at different spots in the same corridor, all looking at the wall at
-        // z=3, must produce exactly the same room.
-        GridPos wall = new GridPos(0, 64, 3);
-        assertEquals(wall, MallAnchor.of(0, 64, 0, 0.0f, 3).facedRoom().openingCentre());
-        assertEquals(wall, MallAnchor.of(0, 64, 1, 0.0f, 2).facedRoom().openingCentre());
-        assertEquals(wall, MallAnchor.of(0, 64, 2, 0.0f, 1).facedRoom().openingCentre());
     }
 
     @Test
     void worksForEveryFacingIncludingNegativeCoordinates() {
         GridPos feet = new GridPos(-100, 12, -200);
         assertEquals(
-                new GridPos(-100, 12, -198),
-                new MallAnchor(feet, Facing.SOUTH, 2).facedRoom().openingCentre());
+                new GridPos(-100, 12, -199),
+                new MallAnchor(feet, Facing.SOUTH).facedRoom().openingCentre());
         assertEquals(
-                new GridPos(-100, 12, -202),
-                new MallAnchor(feet, Facing.NORTH, 2).facedRoom().openingCentre());
+                new GridPos(-100, 12, -201),
+                new MallAnchor(feet, Facing.NORTH).facedRoom().openingCentre());
         assertEquals(
-                new GridPos(-98, 12, -200),
-                new MallAnchor(feet, Facing.EAST, 2).facedRoom().openingCentre());
+                new GridPos(-99, 12, -200),
+                new MallAnchor(feet, Facing.EAST).facedRoom().openingCentre());
         assertEquals(
-                new GridPos(-102, 12, -200),
-                new MallAnchor(feet, Facing.WEST, 2).facedRoom().openingCentre());
+                new GridPos(-101, 12, -200),
+                new MallAnchor(feet, Facing.WEST).facedRoom().openingCentre());
     }
 
     @Test
-    void floorAndCeilingPlatesBracketASevenTallEnvelope() {
-        MallAnchor a = MallAnchor.of(0, 64, 0, 0.0f, 2);
+    void floorAndCeilingRecessesBracketASevenTallEnvelope() {
+        MallAnchor a = MallAnchor.of(0, 64, 0, 0.0f);
         assertEquals(63, a.floorPlateY());
         assertEquals(69, a.ceilingPlateY());
         assertEquals(7, a.ceilingPlateY() - a.floorPlateY() + 1);
@@ -76,7 +82,7 @@ class MallAnchorTest {
     @Test
     void alongAndSideInvertCellForEveryFacing() {
         for (Facing f : Facing.values()) {
-            MallAnchor a = new MallAnchor(new GridPos(40, 64, -60), f, 2);
+            MallAnchor a = new MallAnchor(new GridPos(40, 64, -60), f);
             for (int along = -6; along <= 12; along++) {
                 for (int side = -3; side <= 3; side++) {
                     GridPos p = a.cell(along, side, 70);
@@ -90,20 +96,22 @@ class MallAnchorTest {
 
     @Test
     void ofSnapsYawToACardinal() {
-        assertEquals(Facing.SOUTH, MallAnchor.of(0, 0, 0, 12.0f, 2).facing());
-        assertEquals(Facing.WEST, MallAnchor.of(0, 0, 0, 78.0f, 2).facing());
-        assertEquals(Facing.NORTH, MallAnchor.of(0, 0, 0, -179.0f, 2).facing());
-        assertEquals(Facing.EAST, MallAnchor.of(0, 0, 0, -88.0f, 2).facing());
+        assertEquals(Facing.SOUTH, MallAnchor.of(0, 0, 0, 12.0f).facing());
+        assertEquals(Facing.WEST, MallAnchor.of(0, 0, 0, 78.0f).facing());
+        assertEquals(Facing.NORTH, MallAnchor.of(0, 0, 0, -179.0f).facing());
+        assertEquals(Facing.EAST, MallAnchor.of(0, 0, 0, -88.0f).facing());
     }
 
     @Test
-    void roomCountFollowsTheSideChoice() {
-        assertEquals(1, new MallSpec(false, true, 3).roomCount());
-        assertEquals(2, new MallSpec(true, true, 3).roomCount());
+    void roomCountFollowsTheJobKind() {
+        assertEquals(1, MallSpec.room(false, 3).roomCount());
+        assertEquals(2, MallSpec.room(true, 3).roomCount());
+        assertEquals(0, MallSpec.spine(7, 3).roomCount());
     }
 
     @Test
-    void specRejectsADegenerateCorridor() {
-        assertThrows(IllegalArgumentException.class, () -> new MallSpec(false, true, 0));
+    void specRejectsDegenerateShapes() {
+        assertThrows(IllegalArgumentException.class, () -> MallSpec.room(false, 0));
+        assertThrows(IllegalArgumentException.class, () -> MallSpec.spine(0, 3));
     }
 }

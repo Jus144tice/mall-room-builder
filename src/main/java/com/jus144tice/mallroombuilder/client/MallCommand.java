@@ -9,10 +9,11 @@ import com.jus144tice.mallroombuilder.core.MallAnchor;
 import com.jus144tice.mallroombuilder.core.MallCounts;
 import com.jus144tice.mallroombuilder.core.MallLayout;
 import com.jus144tice.mallroombuilder.core.MallSpec;
+import com.jus144tice.mallroombuilder.core.SpineGeometry;
+import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
@@ -23,8 +24,18 @@ import net.neoforged.neoforge.client.event.RegisterClientCommandsEvent;
 /**
  * The {@code /mallroom} command tree.
  *
- * <p>You stand in the spine hallway facing the wall you want opened; facing picks the side. Adding
- * {@code both} also carves the room directly opposite.</p>
+ * <pre>
+ *   /mallroom room [both]              carve a room off the spine
+ *   /mallroom spine [length]           carve the next segment of spine
+ *   /mallroom preview room [both]      counts only, no side effects
+ *   /mallroom preview spine [length]
+ *   /mallroom status
+ *   /mallroom stop
+ * </pre>
+ *
+ * <p>Both jobs share one rule: stand facing the way you want to build, and <strong>the block
+ * directly in front of you is the first block of the job</strong>. For a room you are laterally
+ * centred on it; for a spine segment you are on the centre lane.</p>
  *
  * <p>Registered from {@link RegisterClientCommandsEvent} on the <strong>game</strong> bus, which
  * re-fires on every world join. Nothing reaches the server; feedback goes through
@@ -42,67 +53,90 @@ public final class MallCommand {
     public static void onRegisterClientCommands(RegisterClientCommandsEvent event) {
         event.getDispatcher()
                 .register(Commands.literal("mallroom")
-                        .then(Commands.literal("build")
-                                .executes(ctx -> build(ctx, false))
-                                .then(Commands.literal("both").executes(ctx -> build(ctx, true))))
+                        .then(Commands.literal("room")
+                                .executes(ctx -> run(ctx, roomSpec(false), false))
+                                .then(Commands.literal("both").executes(ctx -> run(ctx, roomSpec(true), false))))
+                        .then(Commands.literal("spine")
+                                .executes(ctx -> run(ctx, spineSpec(Config.spineLength()), false))
+                                .then(Commands.argument("length", IntegerArgumentType.integer(1, 64))
+                                        .executes(ctx -> run(
+                                                ctx, spineSpec(IntegerArgumentType.getInteger(ctx, "length")), false))))
                         .then(Commands.literal("preview")
-                                .executes(ctx -> preview(ctx, false))
-                                .then(Commands.literal("both").executes(ctx -> preview(ctx, true))))
+                                .then(Commands.literal("room")
+                                        .executes(ctx -> run(ctx, roomSpec(false), true))
+                                        .then(Commands.literal("both").executes(ctx -> run(ctx, roomSpec(true), true))))
+                                .then(Commands.literal("spine")
+                                        .executes(ctx -> run(ctx, spineSpec(Config.spineLength()), true))
+                                        .then(Commands.argument("length", IntegerArgumentType.integer(1, 64))
+                                                .executes(ctx -> run(
+                                                        ctx,
+                                                        spineSpec(IntegerArgumentType.getInteger(ctx, "length")),
+                                                        true)))))
                         .then(Commands.literal("status").executes(MallCommand::status))
                         .then(Commands.literal("stop").executes(MallCommand::stop)));
     }
 
-    private static MallSpec specOf(boolean bothSides) {
-        return new MallSpec(bothSides, Config.finishHallway(), Config.hallDepth());
+    private static MallSpec roomSpec(boolean bothSides) {
+        return MallSpec.room(bothSides, Config.hallDepth());
     }
 
-    private static int preview(CommandContext<CommandSourceStack> ctx, boolean bothSides) {
+    private static MallSpec spineSpec(int length) {
+        return MallSpec.spine(length, Config.hallDepth());
+    }
+
+    private static int run(CommandContext<CommandSourceStack> ctx, MallSpec spec, boolean previewOnly) {
         Minecraft mc = Minecraft.getInstance();
         LocalPlayer player = mc.player;
-        ClientLevel level = mc.level;
-        if (player == null || level == null) {
+        if (player == null) {
             return 0;
         }
-        MallAnchor anchor = JobEngine.anchorFor(player, level);
-        if (anchor == null) {
-            feedback(
-                    ctx,
-                    ChatFormatting.RED,
-                    "No wall within " + Config.maxWallScan()
-                            + " blocks ahead. Stand in the hallway facing the wall you want opened.");
-            return 0;
+        if (previewOnly) {
+            return preview(ctx, player, spec);
         }
-
-        MallSpec spec = specOf(bothSides);
-        MallLayout layout = new MallLayout(anchor, spec);
-        MallCounts counts = layout.counts();
-        String facing = anchor.facing().name().toLowerCase();
-
-        feedback(
-                ctx,
-                ChatFormatting.AQUA,
-                spec.roomCount() + " room(s) " + facing + ", opening " + anchor.openingDistance() + " block(s) ahead");
-        feedback(ctx, ChatFormatting.GRAY, "  " + counts.minedTotal() + " blocks to mine");
-        feedback(
-                ctx, ChatFormatting.GRAY, "  " + counts.framingCount() + " framing blocks left standing (never mined)");
-        feedback(
-                ctx,
-                ChatFormatting.GRAY,
-                "  floor at y=" + anchor.playerFeet().y() + ", carve reaches y=" + anchor.floorPlateY() + " to y="
-                        + anchor.ceilingPlateY());
-        feedback(ctx, ChatFormatting.DARK_GRAY, "  nothing is placed — decorating the recesses is up to you");
-
-        if (!player.onGround()) {
-            feedback(ctx, ChatFormatting.YELLOW, "  You are not standing on the ground — the floor follows your feet.");
+        String error = JobEngine.INSTANCE.start(mc, spec);
+        if (error != null) {
+            feedback(ctx, ChatFormatting.RED, error);
+            return 0;
         }
         return 1;
     }
 
-    private static int build(CommandContext<CommandSourceStack> ctx, boolean bothSides) {
-        String error = JobEngine.INSTANCE.start(Minecraft.getInstance(), specOf(bothSides));
-        if (error != null) {
-            feedback(ctx, ChatFormatting.RED, error);
-            return 0;
+    private static int preview(CommandContext<CommandSourceStack> ctx, LocalPlayer player, MallSpec spec) {
+        MallAnchor anchor = JobEngine.anchorFor(player);
+        MallLayout layout = new MallLayout(anchor, spec);
+        MallCounts counts = layout.counts();
+        String facing = anchor.facing().name().toLowerCase();
+
+        if (spec.kind() == MallSpec.Kind.SPINE) {
+            feedback(
+                    ctx,
+                    ChatFormatting.AQUA,
+                    "Spine segment " + facing + ": " + spec.spineLength() + " long, " + (SpineGeometry.RADIUS * 2 + 1)
+                            + " wide, " + SpineGeometry.HEIGHT + " tall");
+            feedback(ctx, ChatFormatting.GRAY, "  " + counts.minedTotal() + " blocks to mine");
+            feedback(
+                    ctx,
+                    ChatFormatting.GRAY,
+                    "  starts at the block in front of you, y="
+                            + anchor.playerFeet().y() + " to y="
+                            + (anchor.playerFeet().y() + SpineGeometry.HEIGHT - 1));
+        } else {
+            feedback(ctx, ChatFormatting.AQUA, spec.roomCount() + " room(s) " + facing);
+            feedback(ctx, ChatFormatting.GRAY, "  " + counts.minedTotal() + " blocks to mine");
+            feedback(
+                    ctx,
+                    ChatFormatting.GRAY,
+                    "  " + counts.framingCount() + " framing blocks left standing (never mined)");
+            feedback(
+                    ctx,
+                    ChatFormatting.GRAY,
+                    "  opening at the block in front of you, carve reaches y=" + anchor.floorPlateY() + " to y="
+                            + anchor.ceilingPlateY());
+        }
+        feedback(ctx, ChatFormatting.DARK_GRAY, "  nothing is placed — decorating is up to you");
+
+        if (!player.onGround()) {
+            feedback(ctx, ChatFormatting.YELLOW, "  You are not standing on the ground — the floor follows your feet.");
         }
         return 1;
     }

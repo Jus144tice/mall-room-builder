@@ -27,17 +27,9 @@ public final class Config {
                     "Also sets how far apart two facing rooms sit: hallDepth + 1.")
             .defineInRange("hallDepth", 3, 1, 15);
 
-    public static final ModConfigSpec.BooleanValue FINISH_HALLWAY = BUILDER.comment(
-                    "Also carve the stretch of corridor fronting the room.",
-                    "Usually already open (you are standing in it), so it costs nothing -- but it",
-                    "finishes the floor and ceiling recesses in front of a freshly opened room.")
-            .define("finishHallway", true);
-
-    public static final ModConfigSpec.IntValue MAX_WALL_SCAN = BUILDER.comment(
-                    "How far ahead to look for the hallway wall when working out where the room goes.",
-                    "If nothing solid turns up within this many blocks the command refuses, which is",
-                    "what catches 'you are facing an already-open room'.")
-            .defineInRange("maxWallScan", 6, 1, 32);
+    public static final ModConfigSpec.IntValue SPINE_LENGTH = BUILDER.comment(
+                    "Blocks along the run carved by /mallroom spine with no argument.")
+            .defineInRange("spineLength", 7, 1, 64);
 
     // --- Movement -----------------------------------------------------------
 
@@ -190,12 +182,8 @@ public final class Config {
         return safeGet(HALL_DEPTH, 3);
     }
 
-    public static boolean finishHallway() {
-        return safeGet(FINISH_HALLWAY, true);
-    }
-
-    public static int maxWallScan() {
-        return safeGet(MAX_WALL_SCAN, 6);
+    public static int spineLength() {
+        return safeGet(SPINE_LENGTH, 7);
     }
 
     public static boolean autoWalkEnabled() {

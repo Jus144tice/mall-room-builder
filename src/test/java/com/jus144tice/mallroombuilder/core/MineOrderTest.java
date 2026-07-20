@@ -16,16 +16,15 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 /**
- * Ordering safety. These are the assertions that stop the job deadlocking on an unreachable ceiling
- * or digging the floor out from under the player.
+ * Ordering safety. These are the assertions that stop a job deadlocking on an unreachable ceiling or
+ * digging the floor out from under the player.
  */
 class MineOrderTest {
 
-    private static final MallAnchor ANCHOR = MallAnchor.of(0, 64, 0, 0.0f, 2);
-    private static final MallSpec SPEC = new MallSpec(true, true, 3);
+    private static final MallAnchor ANCHOR = MallAnchor.of(0, 64, 0, 0.0f);
 
-    private static MallLayout layout() {
-        return new MallLayout(ANCHOR, SPEC);
+    private static MallLayout room(boolean bothSides) {
+        return new MallLayout(ANCHOR, MallSpec.room(bothSides, 3));
     }
 
     private static Map<GridPos, Integer> indexOf(List<GridPos> order) {
@@ -38,7 +37,7 @@ class MineOrderTest {
 
     @Test
     void isExactlyAPermutationOfTheCarveSet() {
-        MallLayout l = layout();
+        MallLayout l = room(true);
         List<GridPos> order = l.mineOrder();
         assertEquals(l.carve().size(), order.size(), "no omissions");
         assertEquals(order.size(), new HashSet<>(order).size(), "no duplicates");
@@ -47,7 +46,7 @@ class MineOrderTest {
 
     @Test
     void neverQueuesFraming() {
-        MallLayout l = layout();
+        MallLayout l = room(true);
         assertTrue(l.mineOrder().stream().noneMatch(l.framing()::contains));
     }
 
@@ -57,8 +56,7 @@ class MineOrderTest {
 
         @Test
         void everyFloorCellFollowsEveryNonFloorCell() {
-            MallLayout l = layout();
-            List<GridPos> order = l.mineOrder();
+            List<GridPos> order = room(true).mineOrder();
             int floorY = ANCHOR.floorPlateY();
 
             int lastNonFloor = -1;
@@ -77,7 +75,7 @@ class MineOrderTest {
 
         @Test
         void noFloorCellIsMinedBeforeTheCellAboveIt() {
-            MallLayout l = layout();
+            MallLayout l = room(true);
             Map<GridPos, Integer> index = indexOf(l.mineOrder());
             int floorY = ANCHOR.floorPlateY();
 
@@ -101,8 +99,16 @@ class MineOrderTest {
         void aRoomIsCarvedFrontToBack() {
             // The far ceiling is ~5.25 blocks from the opening -- past reach -- and unreachable until
             // the near slices are open. Carving the whole ceiling first would deadlock on block one.
-            MallLayout l = layout();
-            RoomPlacement room = ANCHOR.facedRoom();
+            assertSliceOrder(room(false), ANCHOR.facedRoom(), RoomGeometry.BACK_PLATE_DEPTH);
+        }
+
+        @Test
+        void aSpineSegmentIsCarvedFrontToBackToo() {
+            MallLayout l = new MallLayout(ANCHOR, MallSpec.spine(7, 3));
+            assertSliceOrder(l, ANCHOR.spineStart(), 6);
+        }
+
+        private void assertSliceOrder(MallLayout l, RoomPlacement frame, int lastSlice) {
             Map<GridPos, Integer> index = indexOf(l.mineOrder());
             int floorY = ANCHOR.floorPlateY();
 
@@ -113,15 +119,15 @@ class MineOrderTest {
                 if (p.y() == floorY) {
                     continue; // the floor pass is deliberately separate
                 }
-                int d = room.depthOf(p);
-                if (d < 0 || d > RoomGeometry.BACK_PLATE_DEPTH || Math.abs(room.sideOf(p)) > 3) {
-                    continue; // not this room
+                int d = frame.depthOf(p);
+                if (d < 0 || d > lastSlice) {
+                    continue;
                 }
                 firstOfSlice.merge(d, e.getValue(), Math::min);
                 lastOfSlice.merge(d, e.getValue(), Math::max);
             }
 
-            for (int d = 0; d < RoomGeometry.BACK_PLATE_DEPTH; d++) {
+            for (int d = 0; d < lastSlice; d++) {
                 assertTrue(
                         lastOfSlice.get(d) < firstOfSlice.get(d + 1),
                         "slice " + d + " must finish before slice " + (d + 1) + " starts");
@@ -130,7 +136,7 @@ class MineOrderTest {
 
         @Test
         void withinASliceTheCeilingLeadsAndTheBodyGoesTopDown() {
-            MallLayout l = layout();
+            MallLayout l = room(false);
             RoomPlacement room = ANCHOR.facedRoom();
             Map<GridPos, Integer> index = indexOf(l.mineOrder());
 
@@ -158,48 +164,32 @@ class MineOrderTest {
     }
 
     @Test
-    void unitsRunInOrderWithoutInterleaving() {
-        MallLayout l = layout();
+    void theFacedRoomIsFinishedBeforeTheOppositeOneStarts() {
+        MallLayout l = room(true);
         List<GridPos> order = l.mineOrder();
         int floorY = ANCHOR.floorPlateY();
         RoomPlacement faced = ANCHOR.facedRoom();
 
-        // Within the non-floor pass, the corridor is finished before the faced room begins.
-        int lastHall = -1;
-        int firstRoom = Integer.MAX_VALUE;
+        int lastFaced = -1;
+        int firstOpposite = Integer.MAX_VALUE;
         for (int i = 0; i < order.size(); i++) {
             GridPos p = order.get(i);
             if (p.y() == floorY) {
-                continue;
+                continue; // floors run as one pass at the end, across both rooms
             }
-            int d = faced.depthOf(p);
-            // Only the three planes immediately in front of the opening are corridor. Anything
-            // further back belongs to the opposite room, which is a later unit, not an earlier one.
-            if (d >= -SPEC.hallDepth() && d <= -1) {
-                lastHall = Math.max(lastHall, i);
-            } else if (d >= 0 && d <= RoomGeometry.BACK_PLATE_DEPTH && Math.abs(faced.sideOf(p)) <= 3) {
-                firstRoom = Math.min(firstRoom, i);
+            if (ANCHOR.alongOf(p) >= MallAnchor.START_OFFSET) {
+                lastFaced = Math.max(lastFaced, i);
+            } else {
+                firstOpposite = Math.min(firstOpposite, i);
             }
         }
-        assertTrue(lastHall < firstRoom, "the corridor is cleared before carving into the room");
+        assertTrue(lastFaced < firstOpposite, "one room at a time");
+        assertTrue(faced.depthOf(order.get(0)) >= 0, "the job opens in the room being faced");
     }
 
     @Test
-    void aSingleRoomJobOrdersJustAsCleanly() {
-        MallLayout l = new MallLayout(ANCHOR, new MallSpec(false, true, 3));
-        List<GridPos> order = l.mineOrder();
-        assertEquals(l.carve().size(), new HashSet<>(order).size());
-
-        int floorY = ANCHOR.floorPlateY();
-        int lastNonFloor = -1;
-        int firstFloor = Integer.MAX_VALUE;
-        for (int i = 0; i < order.size(); i++) {
-            if (order.get(i).y() == floorY) {
-                firstFloor = Math.min(firstFloor, i);
-            } else {
-                lastNonFloor = Math.max(lastNonFloor, i);
-            }
-        }
-        assertTrue(firstFloor > lastNonFloor);
+    void aSpineSegmentHasNoFloorPassAtAll() {
+        MallLayout l = new MallLayout(ANCHOR, MallSpec.spine(7, 3));
+        assertTrue(l.mineOrder().stream().noneMatch(p -> p.y() == ANCHOR.floorPlateY()));
     }
 }
