@@ -11,20 +11,26 @@ authors = "${mod_authors}"
 logoFile = "mallroombuilder.png"
 displayURL = "https://github.com/Jus144tice/mall-room-builder"
 description = '''
-Client-side builder for grid-aligned "mall" rooms.
+Client-side carver for "mall" rooms and the spine hallway that joins them.
 
-  * A room is a 5x5x5 finished interior inside a 7x7x7 carved envelope (1-block decorated skin).
-  * Only the six flat 5x5 inner faces are mined and skinned; the envelope's edges and corners
-    (the "framing") are never visible from inside, so they are left as natural stone.
-  * Rooms are joined by 3-wide x 5-tall hallways whose floor and ceiling align with the room's.
-  * Aim down the hallway and run one command: it carves, then skins in cobblestone.
+Stand facing the way you want to build; the block directly in front of you is where the job starts.
+
+  * /mallroom room  -- a 5x5x5 room off the spine, open along its whole hallway-facing side,
+    plus a 1-block recess behind each of its five faces to hold the decorative course.
+    The corner cells, never visible from inside, are left exactly as found: the "framing".
+  * /mallroom spine -- the next corridor segment, 7 long by 3 wide by 7 tall.
+  * Add 'rough' to cut only the finished volume and come back for the recesses later.
+
+It carves and nothing else. Decorating is up to you; the only block it ever places is a
+cobblestone backfill into framing that gravel or a mob has knocked out.
 
 Mining goes through the vanilla client mining path, so blocks break progressively, your own
-pickaxes take the wear, and you keep every drop.
+pickaxes take the wear, and you keep every drop. Reach is checked more tightly than the server
+checks it, so it never reaches further than you can.
 
 WARNING: this mod initiates mining and steers player movement without input. It sends only
 vanilla packets, but anti-cheat plugins will flag it. Intended for singleplayer and private
-servers. Any keyboard or mouse input immediately aborts the job.
+servers. Any key, mouse button, or mouse movement immediately aborts the job.
 
 Client-only. Does not need to be installed on the server.
 '''
