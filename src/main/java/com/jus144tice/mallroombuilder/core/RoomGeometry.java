@@ -108,6 +108,55 @@ public final class RoomGeometry {
     }
 
     /**
+     * The cells of one fillable surface. Together the four partition {@link #faceRecesses} exactly:
+     * floor 25 + walls 75 + ceiling 20 + beam 5 = 125.
+     */
+    public static Set<GridPos> surface(RoomPlacement room, Surface surface) {
+        Set<GridPos> out = new LinkedHashSet<>();
+        int floorY = room.floorY();
+        switch (surface) {
+            case FLOOR -> {
+                for (int d = 0; d < BACK_PLATE_DEPTH; d++) {
+                    for (int s = -INTERIOR_RADIUS; s <= INTERIOR_RADIUS; s++) {
+                        out.add(room.cell(d, s, floorY - 1));
+                    }
+                }
+            }
+            case CEILING -> {
+                // From depth 1: the row at the opening plane is the beam, with its own material.
+                for (int d = 1; d < BACK_PLATE_DEPTH; d++) {
+                    for (int s = -INTERIOR_RADIUS; s <= INTERIOR_RADIUS; s++) {
+                        out.add(room.cell(d, s, floorY + INTERIOR_SIZE));
+                    }
+                }
+            }
+            case BEAM -> {
+                for (int s = -INTERIOR_RADIUS; s <= INTERIOR_RADIUS; s++) {
+                    out.add(room.cell(0, s, floorY + INTERIOR_SIZE));
+                }
+            }
+            case WALLS -> {
+                // Back wall.
+                for (int s = -INTERIOR_RADIUS; s <= INTERIOR_RADIUS; s++) {
+                    for (int dy = 0; dy < INTERIOR_SIZE; dy++) {
+                        out.add(room.cell(BACK_PLATE_DEPTH, s, floorY + dy));
+                    }
+                }
+                // Both side walls. These are full 5x5 walls, not narrow pillars -- they only read as
+                // a gap between adjacent rooms because they are unfilled.
+                for (int side : new int[] {-ENVELOPE_RADIUS, ENVELOPE_RADIUS}) {
+                    for (int d = 0; d < BACK_PLATE_DEPTH; d++) {
+                        for (int dy = 0; dy < INTERIOR_SIZE; dy++) {
+                            out.add(room.cell(d, side, floorY + dy));
+                        }
+                    }
+                }
+            }
+        }
+        return out;
+    }
+
+    /**
      * @param wanted exact extreme count, or 2 for "two or more", or -1 for every cell
      */
     private static Set<GridPos> collect(RoomPlacement room, int wanted) {

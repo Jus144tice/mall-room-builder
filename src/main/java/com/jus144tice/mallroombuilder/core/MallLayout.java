@@ -44,12 +44,23 @@ public final class MallLayout {
         Set<GridPos> framingCells = new LinkedHashSet<>();
         Map<GridPos, SortKey> sortKeys = new LinkedHashMap<>();
 
+        // A fill-only job queues nothing to mine, but still needs the framing set so the backfill
+        // watcher protects it while placing.
         if (spec.kind() == MallSpec.Kind.SPINE) {
-            addSpine(anchor.spineStart(), spec, sortKeys, carveCells);
+            if (spec.carve()) {
+                addSpine(anchor.spineStart(), spec, sortKeys, carveCells);
+            }
         } else {
-            addRoom(anchor.facedRoom(), 0, spec, carveCells, framingCells, sortKeys);
-            if (spec.bothSides()) {
-                addRoom(anchor.oppositeRoom(spec), 1, spec, carveCells, framingCells, sortKeys);
+            if (spec.carve()) {
+                addRoom(anchor.facedRoom(), 0, spec, carveCells, framingCells, sortKeys);
+                if (spec.bothSides()) {
+                    addRoom(anchor.oppositeRoom(spec), 1, spec, carveCells, framingCells, sortKeys);
+                }
+            } else {
+                framingCells.addAll(RoomGeometry.framing(anchor.facedRoom()));
+                if (spec.bothSides()) {
+                    framingCells.addAll(RoomGeometry.framing(anchor.oppositeRoom(spec)));
+                }
             }
         }
 
@@ -82,10 +93,66 @@ public final class MallLayout {
         }
     }
 
-    /** Cells to mine. */
+    /** Cells to mine. Empty for a fill-only job. */
     public Set<GridPos> carve() {
         return carve;
     }
+
+    /**
+     * The cells of one surface, across every unit this job covers.
+     *
+     * <p>For a {@code both} job that is the surface on <em>both</em> rooms, which is what makes one
+     * command finish a facing pair in one go.</p>
+     */
+    public Set<GridPos> surface(Surface surface) {
+        Set<GridPos> out = new LinkedHashSet<>();
+        if (spec.kind() == MallSpec.Kind.SPINE) {
+            out.addAll(SpineGeometry.surface(anchor.spineStart(), spec.spineLength(), surface));
+        } else {
+            out.addAll(RoomGeometry.surface(anchor.facedRoom(), surface));
+            if (spec.bothSides()) {
+                out.addAll(RoomGeometry.surface(anchor.oppositeRoom(spec), surface));
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Every cell to fill, in the order to fill it.
+     *
+     * <p>Surface order comes from {@link Surface}'s declaration: <strong>floor first</strong>, which
+     * restores the walking level the carve dropped you from, then walls, then ceiling and beam last —
+     * placed from below, where they are always in reach.</p>
+     *
+     * <p>Within the floor the order is <strong>far to near</strong>, so you back out toward the
+     * entrance as you lay it rather than stranding yourself on the last cell. Everything else runs
+     * near to far. A cell you happen to be standing in is not placeable, gets deferred, and is picked
+     * up on a sweep once you have moved — the same mechanism the carve uses.</p>
+     */
+    public List<FillCell> fillOrder() {
+        List<FillCell> out = new ArrayList<>();
+        for (Surface surface : spec.fill().surfaces()) {
+            List<GridPos> cells = new ArrayList<>(surface(surface));
+            boolean farFirst = surface == Surface.FLOOR;
+            cells.sort(Comparator.comparingInt((GridPos p) -> farFirst ? -depthOf(p) : depthOf(p))
+                    .thenComparingInt(p -> Math.abs(anchor.sideOf(p)))
+                    .thenComparingInt(anchor::sideOf)
+                    .thenComparingInt(GridPos::y));
+            for (GridPos p : cells) {
+                out.add(new FillCell(p, surface));
+            }
+        }
+        return out;
+    }
+
+    /** Distance from the anchor along the facing axis, folded so the opposite room reads the same way. */
+    private int depthOf(GridPos pos) {
+        int along = anchor.alongOf(pos);
+        return along >= 0 ? along : -along;
+    }
+
+    /** One cell to fill, and which surface's material it takes. */
+    public record FillCell(GridPos pos, Surface surface) {}
 
     /** Cells to leave standing, and to backfill if they go missing. */
     public Set<GridPos> framing() {
@@ -101,7 +168,16 @@ public final class MallLayout {
     }
 
     public MallCounts counts() {
-        return new MallCounts(carve.size(), framing.size());
+        int filled = 0;
+        for (Surface s : spec.fill().surfaces()) {
+            filled += surface(s).size();
+        }
+        return new MallCounts(carve.size(), framing.size(), filled);
+    }
+
+    /** How many blocks one surface needs, for the preview breakdown. */
+    public int surfaceCount(Surface surface) {
+        return surface(surface).size();
     }
 
     /**

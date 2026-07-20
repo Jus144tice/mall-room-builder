@@ -6,11 +6,13 @@ package com.jus144tice.mallroombuilder.client;
 
 import com.jus144tice.mallroombuilder.Config;
 import com.jus144tice.mallroombuilder.MallRoomBuilder;
+import com.jus144tice.mallroombuilder.core.FillPlan;
 import com.jus144tice.mallroombuilder.core.GridPos;
 import com.jus144tice.mallroombuilder.core.MallAnchor;
 import com.jus144tice.mallroombuilder.core.MallLayout;
 import com.jus144tice.mallroombuilder.core.MallSpec;
 import com.jus144tice.mallroombuilder.core.QueueCursor;
+import com.jus144tice.mallroombuilder.core.Surface;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -24,20 +26,29 @@ import net.minecraft.core.Direction;
 import net.minecraft.network.chat.Component;
 import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.item.BlockItem;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 
 /**
  * The job state machine. Owns every world read and write.
  *
  * <pre>
- *   IDLE -&gt; ARMING -&gt; CARVING -&gt; IDLE
+ *   IDLE -&gt; ARMING -&gt; CARVING -&gt; FILLING -&gt; IDLE
+ *                        |           ^
+ *                        |           v
+ *                        |    PAUSED_NO_MATERIAL
+ *                        +--&gt; IDLE   (nothing to fill)
  *   any state -&gt; IDLE on abort
  * </pre>
  *
- * <p><strong>The job is pure carving.</strong> A room is 250 blocks of mining — the 5x5x5 interior
- * plus its five 1-block face recesses — and nothing is placed as part of building it. Decorating the
- * recesses happens by hand afterwards. The only block this ever puts down is a backfill into framing
- * that has gone missing.</p>
+ * <p><strong>Carving is the default; filling is opt-in.</strong> A room is 250 blocks of mining and
+ * a job places nothing unless the command named a surface and a hotbar slot. When it does, the fill
+ * phase runs after the carve, taking each surface's material from its assigned slot. A fill-only job
+ * skips carving entirely, for finishing something already dug.</p>
+ *
+ * <p>The one placement that happens regardless is a backfill into framing that has gone missing.</p>
  *
  * <p><strong>Why ARMING exists.</strong> The player pressed Enter to send the command, so the chat
  * screen is closing and keys are frequently still down. Starting immediately would trip the
@@ -55,7 +66,9 @@ public final class JobEngine {
     public enum State {
         IDLE,
         ARMING,
-        CARVING
+        CARVING,
+        FILLING,
+        PAUSED_NO_MATERIAL
     }
 
     private State state = State.IDLE;
@@ -64,6 +77,10 @@ public final class JobEngine {
     private GridPos currentTarget;
 
     private final Set<GridPos> backfill = new LinkedHashSet<>();
+    private final List<MallLayout.FillCell> fillQueue = new ArrayList<>();
+    private int filled;
+    private int fillStallTicks;
+    private Surface pausedSurface;
     private int blockTicks;
     private int armTicks;
     private int stepOffTicks;
@@ -99,6 +116,9 @@ public final class JobEngine {
         if (isRunning()) {
             return "A job is already running. Use /mallroom stop first.";
         }
+        if (!spec.doesSomething()) {
+            return "Nothing to do — name at least one surface and slot to fill.";
+        }
         LocalPlayer player = mc.player;
         ClientLevel level = mc.level;
         if (player == null || level == null || mc.gameMode == null) {
@@ -119,7 +139,12 @@ public final class JobEngine {
         }
 
         this.layout = candidate;
-        this.cursor = new QueueCursor(candidate.mineOrder(), Config.maxVerifySweeps());
+        this.cursor = new QueueCursor(spec.carve() ? candidate.mineOrder() : List.of(), Config.maxVerifySweeps());
+        this.fillQueue.clear();
+        this.fillQueue.addAll(candidate.fillOrder());
+        this.filled = 0;
+        this.fillStallTicks = 0;
+        this.pausedSurface = null;
         this.state = State.ARMING;
         this.currentTarget = null;
         this.backfill.clear();
@@ -138,14 +163,27 @@ public final class JobEngine {
         String what = spec.kind() == MallSpec.Kind.SPINE
                 ? "spine segment " + spec.spineLength() + " long (" + spec.modeName() + ")"
                 : spec.roomCount() + " room(s) (" + spec.modeName() + ")";
-        String framingNote = candidate.counts().framingCount() > 0
-                ? ", " + candidate.counts().framingCount() + " framing left standing"
-                : "";
+        StringBuilder work = new StringBuilder();
+        if (spec.carve()) {
+            work.append(total).append(" to mine");
+        }
+        if (spec.fills()) {
+            if (work.length() > 0) {
+                work.append(", ");
+            }
+            work.append(candidate.counts().placedTotal())
+                    .append(" to place (")
+                    .append(spec.fill())
+                    .append(')');
+        }
+        if (candidate.counts().framingCount() > 0 && spec.carve()) {
+            work.append(", ").append(candidate.counts().framingCount()).append(" framing left standing");
+        }
         say(
                 mc,
                 ChatFormatting.GRAY,
-                "Planning " + what + " " + anchor.facing().name().toLowerCase() + ": " + total + " to mine"
-                        + framingNote + ". Release all keys to begin.");
+                "Planning " + what + " " + anchor.facing().name().toLowerCase() + ": " + work
+                        + ". Release all keys to begin.");
         return null;
     }
 
@@ -170,10 +208,13 @@ public final class JobEngine {
         AutoWalk.stop();
         MineDriver.cancel(mc);
         LocalPlayer player = mc.player;
+        ClientLevel level = mc.level;
         if (player != null) {
             HotbarSelector.restore(player);
         }
-        int leftover = cursor == null ? 0 : cursor.remaining();
+        int leftoverCarve = cursor == null ? 0 : cursor.remaining();
+        int leftoverFill = level == null ? 0 : pendingFillCount(level);
+        int leftover = leftoverCarve + leftoverFill;
         if (leftover > 0) {
             say(
                     mc,
@@ -181,7 +222,7 @@ public final class JobEngine {
                     "Finished with " + leftover + " block(s) unreachable. " + progressLine()
                             + " Stand in the same spot and run it again to pick up the rest.");
         } else {
-            say(mc, ChatFormatting.GREEN, "Carved. " + progressLine());
+            say(mc, ChatFormatting.GREEN, "Done. " + progressLine());
         }
         clear();
     }
@@ -192,6 +233,8 @@ public final class JobEngine {
         layout = null;
         cursor = null;
         backfill.clear();
+        fillQueue.clear();
+        pausedSurface = null;
     }
 
     // --- The tick ----------------------------------------------------------
@@ -228,7 +271,11 @@ public final class JobEngine {
         }
 
         AutoWalk.tick(player);
-        tickCarving(mc, player, level);
+        switch (state) {
+            case CARVING -> tickCarving(mc, player, level);
+            case FILLING, PAUSED_NO_MATERIAL -> tickFilling(mc, player, level);
+            default -> {}
+        }
     }
 
     private void tickArming(Minecraft mc) {
@@ -241,8 +288,11 @@ public final class JobEngine {
                 HotbarSelector.selectBestTool(player, Blocks.STONE.defaultBlockState());
                 HotbarSelector.latchMiningSlot(player);
             }
-            state = State.CARVING;
-            say(mc, ChatFormatting.GRAY, "Carving. Touch any key or move the mouse to stop.");
+            state = layout.spec().carve() ? State.CARVING : State.FILLING;
+            say(
+                    mc,
+                    ChatFormatting.GRAY,
+                    (state == State.CARVING ? "Carving." : "Filling.") + " Touch any key or move the mouse to stop.");
             return;
         }
         if (++armTicks > Config.armGraceTicks()) {
@@ -285,7 +335,7 @@ public final class JobEngine {
         if (currentTarget == null) {
             if (!cursor.hasPending() && !cursor.hasDeferred()) {
                 if (verifyCarve(level)) {
-                    finish(mc);
+                    beginFillOrFinish(mc);
                 }
                 return;
             }
@@ -501,7 +551,158 @@ public final class JobEngine {
 
         MallRoomBuilder.debug("sweep budget exhausted with " + cursor.remaining() + " outstanding");
         AutoWalk.stop();
+        beginFillOrFinish(mc);
+    }
+
+    // --- Filling -----------------------------------------------------------
+
+    private void beginFillOrFinish(Minecraft mc) {
+        if (state == State.CARVING && layout != null && layout.spec().fills()) {
+            MineDriver.cancel(mc);
+            AutoWalk.stop();
+            state = State.FILLING;
+            fillStallTicks = 0;
+            say(
+                    mc,
+                    ChatFormatting.GRAY,
+                    "Carved " + carved + ". Filling " + layout.counts().placedTotal() + ".");
+            return;
+        }
         finish(mc);
+    }
+
+    /**
+     * Places one block per cadence tick.
+     *
+     * <p>A cell counts as needing fill iff it is currently <em>replaceable</em>. That single rule
+     * covers three cases without special-casing any of them: an uncarved recess is solid, so it is
+     * skipped rather than half-filled; an already-filled cell is solid, so re-running a job is a
+     * no-op; and only genuinely open recesses get material.</p>
+     *
+     * <p>Material comes from the hotbar slot the plan assigns to that cell's surface. Slots are only
+     * ever switched between placements, never mid-break — by this point there is no break in flight
+     * anyway, since carving is done.</p>
+     */
+    private void tickFilling(Minecraft mc, LocalPlayer player, ClientLevel level) {
+        watchFraming(level);
+        if (placeCooldown > 0) {
+            placeCooldown--;
+            return;
+        }
+
+        MallLayout.FillCell target = null;
+        MallLayout.FillCell anyPending = null;
+        PlaceDriver.Support support = null;
+
+        for (MallLayout.FillCell cell : fillQueue) {
+            BlockPos pos = MineDriver.toBlockPos(cell.pos());
+            if (!level.isLoaded(pos) || !level.getBlockState(pos).canBeReplaced()) {
+                continue; // already filled, or never carved
+            }
+            if (anyPending == null) {
+                anyPending = cell;
+            }
+            Block block = blockFor(player, cell.surface());
+            if (block == null) {
+                continue; // that surface's slot is empty; handled once it is the only thing left
+            }
+            if (!PlaceDriver.isPlaceable(level, player, pos, block.defaultBlockState())) {
+                continue;
+            }
+            PlaceDriver.Support candidate = PlaceDriver.findSupport(player, level, pos);
+            if (candidate != null) {
+                target = cell;
+                support = candidate;
+                break;
+            }
+        }
+
+        if (anyPending == null) {
+            finish(mc);
+            return;
+        }
+
+        if (target == null) {
+            if (blockFor(player, anyPending.surface()) == null) {
+                pauseForMaterial(mc, anyPending.surface());
+                return;
+            }
+            resume(mc);
+            AutoWalk.steerTo(anyPending.pos());
+            if (++fillStallTicks > Config.blockTimeoutTicks()) {
+                MallRoomBuilder.debug("fill stalled with " + pendingFillCount(level) + " cells left");
+                AutoWalk.stop();
+                finish(mc);
+            }
+            return;
+        }
+
+        resume(mc);
+        fillStallTicks = 0;
+        AutoWalk.stop();
+
+        int slot = layout.spec().fill().inventoryIndex(target.surface());
+        if (!HotbarSelector.onSlot(player, slot)) {
+            HotbarSelector.selectSlot(player, slot);
+            return; // let the swap settle for a tick before placing
+        }
+
+        if (PlaceDriver.place(mc, player, support, InteractionHand.MAIN_HAND)) {
+            filled++;
+            placeCooldown = Config.placeCooldownTicks();
+        } else {
+            // Server refused, or the stack ran out between the check and the click.
+            if (++fillStallTicks > Config.blockTimeoutTicks()) {
+                AutoWalk.stop();
+                finish(mc);
+            }
+        }
+    }
+
+    /** The block a surface's assigned hotbar slot currently supplies, or null if it has none. */
+    private Block blockFor(LocalPlayer player, Surface surface) {
+        FillPlan plan = layout.spec().fill();
+        if (!plan.covers(surface)) {
+            return null;
+        }
+        ItemStack stack = player.getInventory().getItem(plan.inventoryIndex(surface));
+        if (stack.isEmpty() || !(stack.getItem() instanceof BlockItem blockItem)) {
+            return null;
+        }
+        return blockItem.getBlock();
+    }
+
+    private void pauseForMaterial(Minecraft mc, Surface surface) {
+        AutoWalk.stop();
+        if (state != State.PAUSED_NO_MATERIAL || pausedSurface != surface) {
+            FillPlan plan = layout.spec().fill();
+            say(
+                    mc,
+                    ChatFormatting.YELLOW,
+                    "Out of material for the " + surface.key() + " (hotbar slot " + plan.slot(surface)
+                            + "). Restock it to resume, or /mallroom stop.");
+        }
+        state = State.PAUSED_NO_MATERIAL;
+        pausedSurface = surface;
+    }
+
+    private void resume(Minecraft mc) {
+        if (state == State.PAUSED_NO_MATERIAL) {
+            state = State.FILLING;
+            pausedSurface = null;
+            say(mc, ChatFormatting.GRAY, "Resuming.");
+        }
+    }
+
+    private int pendingFillCount(ClientLevel level) {
+        int n = 0;
+        for (MallLayout.FillCell cell : fillQueue) {
+            BlockPos pos = MineDriver.toBlockPos(cell.pos());
+            if (level.isLoaded(pos) && level.getBlockState(pos).canBeReplaced()) {
+                n++;
+            }
+        }
+        return n;
     }
 
     /**
@@ -601,11 +802,17 @@ public final class JobEngine {
     // --- Status ------------------------------------------------------------
 
     public String progressLine() {
-        String repairs = backfilled > 0 ? ", backfilled " + backfilled + " framing" : "";
-        if (cursor == null) {
-            return "carved " + carved + repairs + ".";
+        StringBuilder sb = new StringBuilder("carved ").append(carved);
+        if (filled > 0) {
+            sb.append(", placed ").append(filled);
         }
-        return "carved " + carved + repairs + "; " + cursor.done() + "/" + cursor.total() + ".";
+        if (backfilled > 0) {
+            sb.append(", backfilled ").append(backfilled).append(" framing");
+        }
+        if (state == State.CARVING && cursor != null) {
+            sb.append("; ").append(cursor.done()).append('/').append(cursor.total());
+        }
+        return sb.append('.').toString();
     }
 
     /** One-line status for the command and the HUD. */
@@ -616,6 +823,10 @@ public final class JobEngine {
             case CARVING -> wrongToolTicks > 0
                     ? "waiting for a tool that can harvest this block"
                     : "carving " + queueFraction();
+            case FILLING -> "filling " + filled + "/"
+                    + (layout == null ? 0 : layout.counts().placedTotal());
+            case PAUSED_NO_MATERIAL -> "paused: out of material for the "
+                    + (pausedSurface == null ? "fill" : pausedSurface.key());
         };
     }
 

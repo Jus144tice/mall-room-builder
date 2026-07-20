@@ -10,9 +10,9 @@ spine hallway, face the wall you want opened, run one command.
 
 ## What it does
 
-**It carves. It does not build.** A room is 250 blocks of mining and nothing is placed — decorating
-the recesses afterwards is your job. The only block the mod ever puts down is a cobblestone backfill
-into framing that has gone missing.
+**It carves, and it fills what you tell it to.** A room is 250 blocks of mining. By default nothing
+is placed; name a surface and a hotbar slot and it lays that material into the recess after cutting
+it. Framing that goes missing gets backfilled with cobblestone regardless.
 
 The mall is a spine hallway with rooms budding off it, shoulder to shoulder, openings facing the
 corridor:
@@ -81,17 +81,53 @@ Rough is for when you don't have the decorative blocks on you. Because the ancho
 and already-carved cells retire on sight, you can **rough a whole run out now, then walk back later
 and re-run the same jobs from the same spots** — and only the recesses get cut.
 
+### Filling from your hotbar
+
+Name a surface and a hotbar slot and the job fills that recess after carving it:
+
+```
+/mallroom spine ceiling 4 floor 3
+/mallroom room finish floor 3 walls 5 ceiling 4 beam 6
+/mallroom fill room beam 6                  fill only, over something already carved
+```
+
+Slots are hotbar positions **1–9** as you see them. Surfaces are:
+
+| Surface | Room | Spine |
+|---|---|---|
+| `floor` | 25 | 3 × length |
+| `walls` | 75 — back wall plus **both side walls** | — |
+| `ceiling` | 20 | 3 × length |
+| `beam` | 5 — the lintel row across the entrance | — |
+
+Every surface is optional and they can be given **in any order**, so `floor 3` alone works, and
+`beam 6 ceiling 4` is the same as `ceiling 4 beam 6`. Naming none means carve-only.
+
+A room's `walls` covers the back wall *and* both side walls. Two adjacent rooms each have their own
+side wall, which is why an unfilled pair shows a 2-block gap between their openings — that's two
+walls back to back waiting for material.
+
+Filling runs **floor → walls → ceiling → beam**. Floor first is deliberate: it puts your walking
+level back where the carve dropped it from, so the rest is placed from your normal standing height.
+The floor itself is laid far-to-near so you back out of the room rather than stranding yourself on
+the last cell. Run out of a material and the job **pauses** naming the surface and slot — restock
+and it resumes.
+
+`/mallroom fill` skips carving entirely, for finishing something already dug. Same anchor rule, so
+stand where you'd stand to carve it.
+
 ## Usage
 
 ```
-/mallroom room  [both]   [rough|finish]     carve a room off the spine
-/mallroom spine [length] [rough|finish]     carve the next segment of corridor
+/mallroom room  [both]   [rough|finish] [<surface> <slot>]...
+/mallroom spine [length] [rough|finish] [<surface> <slot>]...
 
-/mallroom preview room  [both]   [rough|finish]     counts only — no side effects
-/mallroom preview spine [length] [rough|finish]
+/mallroom fill room  [both]   <surface> <slot>...     fill without carving
+/mallroom fill spine [length] <surface> <slot>...
 
-/mallroom status                            current progress
-/mallroom stop                              abort cleanly
+/mallroom preview ...                                 same shapes, counts only
+/mallroom status                                      current progress
+/mallroom stop                                        abort cleanly
 ```
 
 **One rule covers both jobs: stand facing the way you want to build, and the block directly in front
@@ -189,7 +225,7 @@ lands at `build/libs/mallroombuilder-<version>.jar`.
 
 ## Verification status
 
-The geometry is covered by **137 unit tests** (`./gradlew test`) — every count above is asserted,
+The geometry is covered by **170 unit tests** (`./gradlew test`) — every count above is asserted,
 along with the ordering invariants that keep a job from deadlocking on an unreachable ceiling or
 digging the floor out from under you. The mod is confirmed to load cleanly in a dev client.
 
@@ -208,6 +244,11 @@ digging the floor out from under you. The mod is confirmed to load cleanly in a 
 - [ ] Gravel above the ceiling → the framing watcher backfills anything it knocks out
 - [ ] Put obsidian in the path with a stone pickaxe → job pauses, then aborts naming the block, obsidian intact
 - [ ] Let a pickaxe break mid-job → your replacement mod swaps in and the job carries on
+- [ ] `/mallroom preview spine ceiling 4 floor 3` lists both surfaces with the item and count in each slot
+- [ ] `/mallroom spine ceiling 4 floor 3` carves then fills; you end level, not one block lower
+- [ ] Empty a slot mid-fill → pauses naming the surface and slot; restock → resumes
+- [ ] `/mallroom room floor 3 walls 5 ceiling 4 beam 6` puts the beam row across the entrance only
+- [ ] `/mallroom fill room beam 6` over an already-carved room fills just the beam
 - [ ] `room both` produces two rooms facing each other, correctly spaced
 - [ ] `/mallroom stop` mid-carve leaves no stuck cracking overlay
 - [ ] Hotbar restored afterwards; no mid-break slot switch resetting progress

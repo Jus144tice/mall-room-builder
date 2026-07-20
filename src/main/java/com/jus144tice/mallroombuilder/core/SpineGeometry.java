@@ -52,6 +52,20 @@ public final class SpineGeometry {
     }
 
     /**
+     * The cells of one fillable surface.
+     *
+     * <p>A segment has only a floor and a ceiling: its sides are always either a room's opening or a
+     * room's side wall, so there is nothing there for the corridor itself to finish.</p>
+     */
+    public static Set<GridPos> surface(RoomPlacement start, int length, Surface surface) {
+        return switch (surface) {
+            case FLOOR -> slab(start, length, -1, -1);
+            case CEILING -> slab(start, length, INTERIOR_HEIGHT, INTERIOR_HEIGHT);
+            case WALLS, BEAM -> Set.of();
+        };
+    }
+
+    /**
      * Every cell to mine.
      *
      * @param includeRecesses cut the floor and ceiling recesses as well as the interior

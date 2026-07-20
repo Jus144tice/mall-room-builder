@@ -12,9 +12,10 @@ them. You stand facing the way you want to build; it mines the volume and leaves
 block of the job** (`MallAnchor.START_OFFSET` = 1). Nothing is read from the world, which is what
 makes a partial job resumable — same standing block, same volume, every time.
 
-- **It carves. It does not build.** A room is 250 blocks of mining and nothing is placed. Decorating
-  the recesses is done by hand afterwards. The one exception is backfilling framing that has gone
-  missing (gravel, mobs) — that is the only reason cobblestone appears anywhere in this codebase.
+- **Carving is the default; filling is opt-in.** A room is 250 blocks of mining and a job places
+  nothing unless the command named a surface and a hotbar slot. When it does, a fill phase runs after
+  the carve, taking each surface's material from its assigned slot. `/mallroom fill` skips carving
+  entirely, for finishing something already dug. Framing that goes missing is backfilled regardless.
 - **Topology:** a spine hallway with rooms budding off it perpendicular, on both sides, shoulder to
   shoulder. A room's whole hallway-facing side is **open**; the pillars framing each opening are the
   corridor wall, present between rooms and absent where a room is.
@@ -86,6 +87,23 @@ exactly the recesses and nothing else. Do not break either half of that.
 
 Job sizes: `room` 250/44, `room rough` 125/44, `room both` 500/88, `spine` 147/0, `spine rough` 105/0.
 
+### Fillable surfaces
+
+`Surface` partitions a room's 125 face recesses exactly — **floor 25, walls 75, ceiling 20, beam 5**
+— and `SurfaceTest.togetherTheyAreExactlyTheFaceRecesses` pins that. A spine has only floor and
+ceiling; `Surface.forKind` is what keeps `walls` and `beam` off the spine command branch.
+
+- **walls** is the back wall *plus both side walls*. Adjacent rooms each carry their own side wall,
+  which is why an unfilled pair shows a 2-block gap between openings.
+- **beam** is the ceiling row at depth 0, five wide — the lintel over the entrance. `CEILING`
+  deliberately starts at depth 1 so the two never overlap. The cells over the pillars
+  (`d=0, |s|=3, dy=5`) are two-extreme, so they stay framing and are neither carved nor filled.
+
+**Fill order is the `Surface` declaration order**, and that is load-bearing: floor first restores the
+walking level the carve dropped you from, so walls and ceiling are placed from normal standing
+height, and the ceiling goes last from below where it is always in reach. Within the floor the order
+is far-to-near so the player backs out of the room rather than stranding themselves on the last cell.
+
 ---
 
 ## Architecture
@@ -147,6 +165,10 @@ every movement update
 - **Never change hotbar slots mid-break.** `sameDestroyTarget` calls `shouldCauseBlockBreakReset`, so
   a slot change zeroes destroy progress. Backfill only runs when `currentTarget == null`, and
   `tickCarving` swaps back to `HotbarSelector.miningSlot()` before driving another break.
+- **A fill cell counts as pending iff it is currently replaceable.** One rule, three cases, no
+  special-casing: an uncarved recess is solid so it is skipped rather than half-filled, an
+  already-filled cell is solid so re-running a job is a no-op, and only genuinely open recesses get
+  material. Same re-derivation philosophy as the carve.
 - **`retireAlreadyCarved` must run before steering.** A cell already air is never a valid target, so
   without it the queue never drains and auto-walk steers at it forever.
 - **`ARMING` is not optional.** The player pressed Enter to send the command; without the wait the
@@ -163,11 +185,13 @@ every movement update
 | [GridPos.java](src/main/java/com/jus144tice/mallroombuilder/core/GridPos.java) | record `(x,y,z)`; `plus`, `minus`, `offset(Facing,int)`, `lateral`, `withY`, `at(Facing,along,side,y)` | Minecraft-free block position. `at` is the facing-relative constructor everything else describes cells with. |
 | [Facing.java](src/main/java/com/jus144tice/mallroombuilder/core/Facing.java) | `SOUTH,WEST,NORTH,EAST` (**declaration order is MC's 2D data values**), `fromYaw`, `stepX/stepZ`, `left()`, `opposite()` | `fromYaw` reproduces `Direction.fromYRot` via `Math.floorMod`, so unnormalised player yaws work. Names match `net.minecraft.core.Direction` for name-based conversion. |
 | [RoomPlacement.java](src/main/java/com/jus144tice/mallroombuilder/core/RoomPlacement.java) | record `(openingCentre, depth)`; `cell(d,s,y)`, `depthOf`, `sideOf`, `floorY`, `floorPlateY`, `ceilingPlateY` | One room's position and orientation. A room is *directed* — open at the front, walled at the back — so everything is d/s/dy relative to the opening. |
-| [MallSpec.java](src/main/java/com/jus144tice/mallroombuilder/core/MallSpec.java) | record `(kind, bothSides, hallDepth, spineLength, **finishRecesses**)`; `Kind` (ROOM/SPINE); factories `room(...)`, `spine(...)`; `roomCount()`, `oppositeOpeningOffset()`, `modeName()` | What one job carves. `oppositeOpeningOffset` is `hallDepth + 1`: the corridor plus the two wall planes the openings occupy. |
+| [MallSpec.java](src/main/java/com/jus144tice/mallroombuilder/core/MallSpec.java) | record `(kind, bothSides, hallDepth, spineLength, finishRecesses, **carve**, **fill**)`; `Kind`; factories `room(...)`, `spine(...)`; `withFill`, `fillOnly`, `roomCount()`, `oppositeOpeningOffset()`, `fills()`, **`doesSomething()`**, `modeName()` | What one job does. The compact constructor deliberately does *not* reject "neither carve nor fill" — the command builds a fill-only spec then attaches surfaces, so it is briefly in that state; `doesSomething()` is checked at the edges instead. |
+| [Surface.java](src/main/java/com/jus144tice/mallroombuilder/core/Surface.java) | `FLOOR, WALLS, CEILING, BEAM` (**declaration order is fill order**); `key()`, `forRoom()`, `forSpine()`, `forKind(Kind)` | The fillable faces. `forKind` is what keeps `walls`/`beam` off the spine command branch. |
+| [FillPlan.java](src/main/java/com/jus144tice/mallroombuilder/core/FillPlan.java) | `none()`, `builder()`, `covers`, `slot`, **`inventoryIndex`**, `surfaces()` | Surface → hotbar slot. Slots are **1-9 as the player sees them**; `inventoryIndex` does the off-by-one into `Inventory.selected`. A `null` slot is ignored, so partial plans just work. |
 | [MallAnchor.java](src/main/java/com/jus144tice/mallroombuilder/core/MallAnchor.java) | **`START_OFFSET`** (1); record `(playerFeet, facing)`; `of`, `facedRoom()`, `oppositeRoom(spec)`, **`spineStart()`**, `floorPlateY`, `ceilingPlateY`, `cell`, `alongOf`, `sideOf` | Where the job goes, from position and facing alone. `facedRoom()` and `spineStart()` return the same frame — both begin at the next block ahead. |
 | [SpineGeometry.java](src/main/java/com/jus144tice/mallroombuilder/core/SpineGeometry.java) | `DEFAULT_LENGTH` (7), `RADIUS` (1), `WIDTH` (3), `INTERIOR_HEIGHT` (5), `ENVELOPE_HEIGHT` (7); `interior`, `recesses`, **`carve(start, length, includeRecesses)`**, `cellCount(length, includeRecesses)` | A plain corridor box: floor and ceiling recesses like a room's, but no side recesses and no framing. |
 | [RoomGeometry.java](src/main/java/com/jus144tice/mallroombuilder/core/RoomGeometry.java) | `INTERIOR_SIZE` (5), `INTERIOR_RADIUS` (2), `ENVELOPE_RADIUS` (3), `BACK_PLATE_DEPTH` (5); **`extremeCount(d,s,dy)`**; `interior`, `faceRecesses`, `framing`, `envelope`, **`carve(room, includeRecesses)`** | **The whole framing rule is `extremeCount`.** `carve` is the rough/finish switch: interior alone, or interior plus the five face recesses. |
-| [MallLayout.java](src/main/java/com/jus144tice/mallroombuilder/core/MallLayout.java) | ctor (branches on `spec.kind()`); `carve()`, `framing()`, `counts()`, **`mineOrder()`**; private `addRoom`, `addSpine`, `keyFor`, record `SortKey` | **The composer and single source of truth.** Two disjoint sets: cells to mine, and cells to protect and backfill. `keyFor` encodes the ordering; units are faced room 0, opposite room 1 (a spine job is a single unit 0). |
+| [MallLayout.java](src/main/java/com/jus144tice/mallroombuilder/core/MallLayout.java) | ctor (branches on `spec.kind()` and `spec.carve()`); `carve()`, `framing()`, **`surface(Surface)`**, `surfaceCount`, `counts()`, **`mineOrder()`**, **`fillOrder()`**; private `addRoom`, `addSpine`, `keyFor`, `depthOf`; records `SortKey`, **`FillCell`** | **The composer and single source of truth.** `mineOrder` and `fillOrder` are the two work queues. A fill-only job still populates `framing()` so the backfill watcher has something to protect. |
 | [MallCounts.java](src/main/java/com/jus144tice/mallroombuilder/core/MallCounts.java) | record `(carvedCount, framingCount)`; `minedTotal()`, `envelopeTotal()` | `minedTotal == carvedCount` because nothing is ever placed. |
 | [QueueCursor.java](src/main/java/com/jus144tice/mallroombuilder/core/QueueCursor.java) | `select`, `peek`, `complete`, `defer`, `requeue`, `sweep`, `outstanding`, `done/remaining/total`, `sweepsUsed`, `deferredCount` | Ordered work list with a deferral tail and a bounded sweep counter. Completion is always the caller's call against the world. |
 | [WalkVector.java](src/main/java/com/jus144tice/mallroombuilder/core/WalkVector.java) | record `(forward,left,jump)`, `STILL`, `toward(...)`, `isMoving()` | Inverts `Entity.getInputVector`'s rotation. Round-tripped against a reimplementation in the tests. |
@@ -176,13 +200,13 @@ every movement update
 
 | File | Symbols | Purpose |
 |---|---|---|
-| [JobEngine.java](src/main/java/com/jus144tice/mallroombuilder/client/JobEngine.java) | `INSTANCE`; `State` (IDLE/ARMING/CARVING); `start`, `abort`, `finish`, `clear`, `tick`, `tickArming`, `tickCarving`, `selectCarveTarget`, `canCarve`, `verifyCarve`, **`watchFraming`**, **`tryBackfill`**, `steerOrStall`, **`retireAlreadyCarved`**, **`reconcileToolSwap`**, `safetyGate`, `touchesLiquid`, `checkLoaded`, **`anchorFor`**, `statusLine`, `progressLine`; field `wrongToolTicks` | **The state machine.** `selectCarveTarget` holds the pedestal rule (skip the block underfoot until `stepOffTimeoutTicks`). `anchorFor` is position + facing only, and static so `MallCommand.preview` shares it. |
+| [JobEngine.java](src/main/java/com/jus144tice/mallroombuilder/client/JobEngine.java) | `INSTANCE`; `State` (IDLE/ARMING/CARVING); `start`, `abort`, `finish`, `clear`, `tick`, `tickArming`, `tickCarving`, `selectCarveTarget`, `canCarve`, `verifyCarve`, **`watchFraming`**, **`tryBackfill`**, `steerOrStall`, **`retireAlreadyCarved`**, **`reconcileToolSwap`**, **`beginFillOrFinish`**, **`tickFilling`**, **`blockFor`**, `pauseForMaterial`, `resume`, `pendingFillCount`, `safetyGate`, `touchesLiquid`, `checkLoaded`, **`anchorFor`**, `statusLine`, `progressLine`; fields `wrongToolTicks`, `fillQueue`, `filled`, `pausedSurface` | **The state machine.** `selectCarveTarget` holds the pedestal rule (skip the block underfoot until `stepOffTimeoutTicks`). `anchorFor` is position + facing only, and static so `MallCommand.preview` shares it. |
 | [MineDriver.java](src/main/java/com/jus144tice/mallroombuilder/client/MineDriver.java) | `toBlockPos`, `inReach`, `isCarved`, **`canHarvest`**, `blockName`, `faceFromEye`, `drive`, `cancel` | `drive` is one `continueDestroyBlock` + `swing` per tick — that call self-starts, self-paces and self-completes, so there is no per-block state machine. `canHarvest` uses the position-sensitive NeoForge overload. |
 | [PlaceDriver.java](src/main/java/com/jus144tice/mallroombuilder/client/PlaceDriver.java) | record `Support(pos, face)` + `hitVec()`; `isPlaceable`, `findSupport`, `place(mc, player, support, hand)` | Used **only** for framing backfill. Synthesizes a `BlockHitResult` on a neighbour's face and calls `useItemOn` — the `LineLockManager.tryReacharound` technique. |
 | [AutoWalk.java](src/main/java/com/jus144tice/mallroombuilder/client/AutoWalk.java) | `steerTo`, `stop`, `isSteering`, `tick`, `desiredWalk`, `wantsJump`, `onMovementInput` | Writes `Input`'s impulse and boolean fields from `MovementInputUpdateEvent`. Set the booleans too — `LocalPlayer` reads them after the event for sprint/jump. |
 | [InputWatch.java](src/main/java/com/jus144tice/mallroombuilder/client/InputWatch.java) | `watched`, `allReleased`, `arm`, `setExpectedSlot`, `expectedSlot`, `tripped`, `trippedKey`, `angleDelta` | The dead-man's switch. Trustworthy because the engine writes `Input` fields directly and **never** touches `KeyMapping` state, so `key*.isDown()` is never reading back our own writes. |
 | [HotbarSelector.java](src/main/java/com/jus144tice/mallroombuilder/client/HotbarSelector.java) | `backfillItem`, `backfillBlock`, `remember`, `miningSlot`, `latchMiningSlot`, `onMiningSlot`, `selectMiningSlot`, **`backfillHand`**, `selectBackfillSlot`, `selectBestTool`, `restore`, `forget` | `backfillHand` checks the off hand first-class: a player keeping cobblestone there never triggers a hotbar swap, so backfill can never disturb a break. |
-| [MallCommand.java](src/main/java/com/jus144tice/mallroombuilder/client/MallCommand.java) | `onRegisterClientCommands`, `roomSpec`, `spineSpec`, `run`, `preview`, `status`, `stop`, `feedback` | `/mallroom room [both]`, `/mallroom spine [length]`, `/mallroom preview room\|spine ...`, `status`, `stop`. **Never add `.requires(hasPermission(n))`** — client sources report permission 0 on servers, which makes the command silently vanish. |
+| [MallCommand.java](src/main/java/com/jus144tice/mallroombuilder/client/MallCommand.java) | `onRegisterClientCommands` → **`register(dispatcher)`** (split out so the tree is unit-testable); `roomBranch`, `spineBranch`, `base`, `modes`, `surfaces`, **`addSurfaceArgs`**, `withFill`, `optionalSlot`, `run`, `preview`, `status`, `stop` | `addSurfaceArgs` recurses over the surfaces not yet named, so every subset **and every ordering** parses. Costs a few hundred nodes; irrelevant client-side and never sent anywhere. `optionalSlot` guards Brigadier throwing rather than reporting absence. **Never add `.requires(hasPermission(n))`** — client sources report permission 0 on servers, which makes the command silently vanish. |
 | [ClientEvents.java](src/main/java/com/jus144tice/mallroombuilder/client/ClientEvents.java) | `onClientTickPost`, `lastDimension` | Ticks the engine; aborts on leaving the world or changing dimension (the anchor is world coordinates). |
 | [HudOverlay.java](src/main/java/com/jus144tice/mallroombuilder/client/HudOverlay.java) | `onRenderGui` | Progress readout. Not decoration — a job runs for minutes at a floor of ~5 ticks per block. |
 
@@ -199,7 +223,7 @@ every movement update
 
 ## Tests
 
-JUnit 5 on the moddev `unitTest` harness. `.\gradlew.bat test`. 137 tests; the geometry is where the
+JUnit 5 on the moddev `unitTest` harness. `.\gradlew.bat test`. 187 tests; the geometry is where the
 value is.
 
 | File | Covers |
@@ -212,6 +236,9 @@ value is.
 | [FacingTest.java](src/test/java/com/jus144tice/mallroombuilder/core/FacingTest.java) | `fromYaw` against the vanilla formula for every degree in ±1080 |
 | [WalkVectorTest.java](src/test/java/com/jus144tice/mallroombuilder/core/WalkVectorTest.java) | round-trip through a reimplementation of `getInputVector` across yaws × directions |
 | [GridPosTest.java](src/test/java/com/jus144tice/mallroombuilder/core/GridPosTest.java), [QueueCursorTest.java](src/test/java/com/jus144tice/mallroombuilder/core/QueueCursorTest.java), [MallCountsTest.java](src/test/java/com/jus144tice/mallroombuilder/core/MallCountsTest.java) | position algebra; cursor defer/sweep/requeue semantics and the sweep bound |
+| [SurfaceTest.java](src/test/java/com/jus144tice/mallroombuilder/core/SurfaceTest.java) | **floor 25 / walls 75 / ceiling 20 / beam 5 partition the 125 recesses exactly**; surfaces never overlap or touch framing; the beam is the depth-0 ceiling row, 5 wide; a spine offers only floor and ceiling; `FillPlan` slot mapping and partial plans |
+| [FillOrderTest.java](src/test/java/com/jus144tice/mallroombuilder/core/FillOrderTest.java) | 125 per room, 250 for `both`, 42 for a spine; **every filled cell is also a carved cell**; **surfaces run floor→walls→ceiling→beam, each one contiguous run**; the floor is laid far-to-near; fill-only jobs carve nothing but keep framing |
+| [MallCommandTreeTest.java](src/test/java/com/jus144tice/mallroombuilder/client/MallCommandTreeTest.java) | the recursive tree **terminates** and every path exists; a spine branch has no `walls`/`beam`; the fill-only branch has no `rough`/`finish`; **any surface can follow any other and none is offered twice**; the chain bottoms out |
 | [ConfigTest.java](src/test/java/com/jus144tice/mallroombuilder/ConfigTest.java) | spec paths and defaults; getters survive the un-loaded state; the safety defaults are the safe ones |
 
 **Nothing in `client/` is unit-tested** — it needs a live client. See the manual checklist in the
@@ -241,8 +268,8 @@ README, and keep it honest.
 - **Throughput is floored at ~5 ticks per block** by `destroyDelay`. A 397-block job takes minutes.
   That is why the HUD exists.
 - **The player finishes one block lower than they started** on any `finish` job, standing in the
-  floor recess. That is correct and matches the hand-built rooms — not a bug. A `rough` job leaves
-  them level, because it never cuts the floor.
+  floor recess — unless the job also fills the floor, which puts them back. A `rough` job leaves them
+  level, because it never cuts the floor. All three outcomes are correct; none is a bug.
 - **A partial job is finished by re-running it from the same block.** That only holds because the
   anchor is world-independent; `MallLayoutTest.theSameStandingSpotAlwaysDescribesTheSameVolume` is
   the assertion protecting it.

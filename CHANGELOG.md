@@ -4,6 +4,43 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] — 2026-07-20
+
+### Added
+
+- **Fill recesses from your hotbar.** Name a surface and a hotbar slot and the job lays that material
+  into the recess after cutting it:
+
+  ```
+  /mallroom spine ceiling 4 floor 3
+  /mallroom room finish floor 3 walls 5 ceiling 4 beam 6
+  ```
+
+  Surfaces are `floor`, `walls`, `ceiling` and `beam` for a room; `floor` and `ceiling` for a spine.
+  Slots are hotbar positions 1-9 as you see them. Every surface is optional and they may be given in
+  **any order**, so `floor 3` alone works and `beam 6 ceiling 4` is the same as `ceiling 4 beam 6`.
+  Naming none is carve-only, exactly as before.
+- **The beam** — the ceiling row across the entrance plane, 5 wide, with its own material. The
+  ceiling surface starts one block deeper so the two never overlap. The cells over the pillars stay
+  framing and are neither carved nor filled.
+- **`/mallroom fill room|spine <surface> <slot>...`** fills without carving, for finishing something
+  already dug. Same anchor rule.
+- Filling runs **floor → walls → ceiling → beam**. Floor first puts your walking level back where the
+  carve dropped it from, so the rest is placed from normal standing height; the ceiling goes last
+  from below where it is always in reach. The floor itself is laid far-to-near so you back out of the
+  room rather than stranding yourself on the last cell.
+- Running out of a material **pauses** naming the surface and slot; restock and it resumes.
+  `/mallroom preview` now lists each surface with the item and count actually in that slot.
+
+### Changed
+
+- `walls` covers the back wall **and both side walls** — 75 blocks. The side walls were previously
+  described as "pillars", which understated them: each is a full 5×5 wall, and an unfilled pair of
+  adjacent rooms shows a 2-block gap precisely because those two walls have no material yet.
+- `MallCommand.register(dispatcher)` split out of the event handler so the recursively-built tree can
+  be unit-tested — it only runs on world join, where a broken tree would look like the command
+  silently not existing.
+
 ## [0.5.0] — 2026-07-20
 
 ### Added

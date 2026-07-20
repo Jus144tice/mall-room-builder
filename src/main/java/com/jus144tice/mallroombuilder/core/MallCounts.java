@@ -10,11 +10,25 @@ package com.jus144tice.mallroombuilder.core;
  * @param carvedCount  cells to mine
  * @param framingCount cells left standing and watched for backfill
  */
-public record MallCounts(int carvedCount, int framingCount) {
+public record MallCounts(int carvedCount, int framingCount, int filledCount) {
 
-    /** Blocks to mine. Nothing is placed, so this is the whole job. */
+    public MallCounts(int carvedCount, int framingCount) {
+        this(carvedCount, framingCount, 0);
+    }
+
+    /** Blocks to mine. */
     public int minedTotal() {
         return carvedCount;
+    }
+
+    /** Blocks to place, across every surface being filled. */
+    public int placedTotal() {
+        return filledCount;
+    }
+
+    /** Full stacks of material needed, rounded up. Only meaningful if one material is used throughout. */
+    public int stacksNeeded() {
+        return (filledCount + 63) / 64;
     }
 
     /** Every cell the job is aware of, carved or protected. */

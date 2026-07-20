@@ -79,6 +79,16 @@ public final class HotbarSelector {
         }
     }
 
+    /** True if the given 0-8 inventory index is already selected. */
+    public static boolean onSlot(LocalPlayer player, int index) {
+        return player.getInventory().selected == index;
+    }
+
+    /** Selects a 0-8 inventory index directly, for the fill phase's per-surface materials. */
+    public static void selectSlot(LocalPlayer player, int index) {
+        select(player, index);
+    }
+
     /**
      * The hand already holding the backfill block, main preferred, or null.
      *
