@@ -1,0 +1,25 @@
+# Gradle
+.gradle/
+build/
+out/
+
+# ModDevGradle generated runtime/sources
+run/
+runs/
+.neoform/
+src/generated/
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.classpath
+.project
+bin/
+
+# OS
+.DS_Store
+Thumbs.db

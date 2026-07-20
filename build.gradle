@@ -1,0 +1,134 @@
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev' version '2.0.141'
+    // Spotless drives the lint/format step (palantir-java-format ~= prettier for Java).
+    id 'com.diffplug.spotless' version '6.25.0'
+    id 'idea'
+}
+
+tasks.named('wrapper', Wrapper).configure {
+    distributionType = Wrapper.DistributionType.BIN
+}
+
+version = mod_version
+group = mod_group_id
+
+base {
+    archivesName = mod_id
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+repositories {
+    // Needed for the JUnit test dependencies below.
+    mavenCentral()
+}
+
+neoForge {
+    version = project.neo_version
+
+    parchment {
+        mappingsVersion = project.parchment_mappings_version
+        minecraftVersion = project.parchment_minecraft_version
+    }
+
+    runs {
+        // Client-only mod: a client run is all we need.
+        client {
+            client()
+        }
+
+        configureEach {
+            systemProperty 'forge.logging.markers', 'REGISTRIES'
+            logLevel = org.slf4j.event.Level.DEBUG
+        }
+    }
+
+    mods {
+        "${mod_id}" {
+            sourceSet(sourceSets.main)
+        }
+    }
+
+    // JUnit-based unit tests run with the NeoForge/Minecraft runtime on the test classpath, so tests
+    // can touch real platform types (e.g. ModConfigSpec in ConfigTest) without standing up the game
+    // client. The pure core/ geometry tests don't need it, but it's harmless for them and required
+    // for ConfigTest.
+    unitTest {
+        enable()
+        testedMod = mods."${mod_id}"
+    }
+}
+
+dependencies {
+    // JUnit 5: junit-jupiter is the API + engine; the launcher is needed to run on Gradle.
+    testImplementation platform('org.junit:junit-bom:5.10.2')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test', Test) {
+    useJUnitPlatform()
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+    }
+}
+
+// Formatting / lint (palantir-java-format, 4-space / 120-col — "prettier for Java"). Folded into the
+// build: `spotlessApply` runs automatically before compilation (see compileJava below), so
+// `gradlew build` formats + compiles + tests in one go. `spotlessCheck` runs as part of `check`
+// (and therefore `build`) as the gate that fails on any unformatted/lint-dirty source.
+spotless {
+    java {
+        target 'src/**/*.java'
+        palantirJavaFormat()
+        removeUnusedImports()
+        trimTrailingWhitespace()
+        endWithNewline()
+    }
+}
+
+// Expand version properties from gradle.properties into neoforge.mods.toml so that the platform
+// versions and the mod version live in exactly one place (standard NeoForge MDK convention). This
+// avoids the version-drift trap of hand-maintaining `version` in a static toml.
+var generateModMetadata = tasks.register('generateModMetadata', ProcessResources) {
+    var replaceProperties = [
+        minecraft_version      : minecraft_version,
+        minecraft_version_range: minecraft_version_range,
+        neo_version            : neo_version,
+        neo_version_range      : neo_version_range,
+        loader_version_range   : loader_version_range,
+        mod_id                 : mod_id,
+        mod_name               : mod_name,
+        mod_license            : mod_license,
+        mod_version            : mod_version,
+        mod_authors            : mod_authors,
+    ]
+    inputs.properties replaceProperties
+    expand replaceProperties
+    from 'src/main/templates'
+    into "${layout.buildDirectory.get()}/generated/sources/modMetadata"
+}
+sourceSets.main.resources.srcDir generateModMetadata
+neoForge.ideSyncTask generateModMetadata
+
+tasks.named('compileJava') {
+    options.encoding = 'UTF-8'
+    // Auto-format on every build/test: compiling depends on spotlessApply, so sources are always
+    // formatted before they are compiled (and therefore before the spotlessCheck gate in `check`).
+    dependsOn 'spotlessApply'
+}
+
+// Pull mod metadata properties into the manifest for traceability.
+jar {
+    manifest {
+        attributes([
+            'Specification-Title'     : mod_name,
+            'Specification-Vendor'    : mod_authors,
+            'Specification-Version'   : '1',
+            'Implementation-Title'    : mod_name,
+            'Implementation-Version'  : mod_version,
+            'Implementation-Vendor'   : mod_authors
+        ])
+    }
+}

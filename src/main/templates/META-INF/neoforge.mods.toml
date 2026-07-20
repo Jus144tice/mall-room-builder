@@ -1,0 +1,47 @@
+modLoader = "javafml"
+loaderVersion = "${loader_version_range}"
+license = "${mod_license}"
+issueTrackerURL = "https://github.com/Jus144tice/mall-room-builder/issues"
+
+[[mods]]
+modId = "${mod_id}"
+version = "${mod_version}"
+displayName = "${mod_name}"
+authors = "${mod_authors}"
+logoFile = "mallroombuilder.png"
+displayURL = "https://github.com/Jus144tice/mall-room-builder"
+description = '''
+Client-side builder for grid-aligned "mall" rooms.
+
+  * A room is a 5x5x5 finished interior inside a 7x7x7 carved envelope (1-block decorated skin).
+  * Only the six flat 5x5 inner faces are mined and skinned; the envelope's edges and corners
+    (the "framing") are never visible from inside, so they are left as natural stone.
+  * Rooms are joined by 3-wide x 5-tall hallways whose floor and ceiling align with the room's.
+  * Aim down the hallway and run one command: it carves, then skins in cobblestone.
+
+Mining goes through the vanilla client mining path, so blocks break progressively, your own
+pickaxes take the wear, and you keep every drop.
+
+WARNING: this mod initiates mining and steers player movement without input. It sends only
+vanilla packets, but anti-cheat plugins will flag it. Intended for singleplayer and private
+servers. Any keyboard or mouse input immediately aborts the job.
+
+Client-only. Does not need to be installed on the server.
+'''
+
+# --- Dependencies -----------------------------------------------------------
+# No mixins: auto-walk uses NeoForge's MovementInputUpdateEvent, and mining/placing are direct
+# public calls on MultiPlayerGameMode. Nothing here is mapping-fragile at load time.
+[[dependencies.mallroombuilder]]
+modId = "neoforge"
+type = "required"
+versionRange = "${neo_version_range}"
+ordering = "NONE"
+side = "CLIENT"
+
+[[dependencies.mallroombuilder]]
+modId = "minecraft"
+type = "required"
+versionRange = "${minecraft_version_range}"
+ordering = "NONE"
+side = "CLIENT"
