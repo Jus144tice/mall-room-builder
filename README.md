@@ -11,8 +11,8 @@ spine hallway, face the wall you want opened, run one command.
 ## What it does
 
 **It carves, and it fills what you tell it to.** A room is 250 blocks of mining. By default nothing
-is placed; name a surface and a hotbar slot and it lays that material into the recess after cutting
-it. Framing that goes missing gets backfilled with cobblestone regardless.
+is placed into the recesses; name a surface and a hotbar slot and it lays that material in after
+cutting it. Framing gaps get backfilled with cobblestone regardless — see below.
 
 The mall is a spine hallway with rooms budding off it, shoulder to shoulder, openings facing the
 corridor:
@@ -182,10 +182,21 @@ Expect to finish standing one block lower than you started, with framing ledges 
 
 ### Framing backfill
 
-The mod never mines framing — but gravel falls and mobs happen. Every second it re-checks that the
-framing is still standing, and replaces anything missing with cobblestone. This runs **between
-blocks, never mid-break**: switching hotbar slots during a break resets destroy progress to zero. If
-you keep cobblestone in your **off hand** it never touches your hotbar at all.
+The mod never mines framing — but a carve often **breaks into a cave**, leaving the corners that
+would normally be solid stone as open air. After carving, a repair phase walks to every such gap and
+fills it with cobblestone, so the room keeps its full frame. It's the one and only block the mod
+places into the shell.
+
+Gaps that go out of reach are walked to, not abandoned. If you have no cobblestone it says so and
+skips the repair rather than hanging. Keep cobblestone in your **off hand** and it never touches
+your hotbar; otherwise it borrows a hotbar slot and puts it back at the end.
+
+### Gravel and sand
+
+Carving the ceiling out from under a gravel or sand deposit makes it pour into the room. The mod
+**waits for it to land, then re-mines it**, and only calls the carve done once the volume has stayed
+clear for a moment (`gravelSettleTicks`, default 10). A tall column just means a few more passes —
+it drains the whole thing rather than leaving a pile behind.
 
 ## Stopping it
 
@@ -216,8 +227,9 @@ lands at `build/libs/mallroombuilder-<version>.jar`.
 | `autoWalkEnabled` | `true` | off = only mine what's already in reach, then stop |
 | `abortOnPlayerInput` | `true` | the dead-man's switch. Turning it off is unsupported |
 | `lookAbortDegrees` | `1.0` | mouse-look sensitivity of the switch |
-| `autoBackfillFraming` | `true` | repair framing that goes missing |
-| `backfillBlock` | `minecraft:cobblestone` | what to repair it with |
+| `autoBackfillFraming` | `true` | repair framing gaps (e.g. where a carve breaks into a cave) |
+| `backfillBlock` | `minecraft:cobblestone` | what to repair them with |
+| `gravelSettleTicks` | `10` | how long the volume must stay clear before carving is done |
 | `abortOnWrongTool` | `true` | stop rather than break a block that wouldn't drop |
 | `toolGraceTicks` | `40` | how long to wait for a replacement tool before giving up |
 | `allowToolSwap` | `true` | treat a hotbar change to another valid tool as a swap, not a takeover |
@@ -241,7 +253,9 @@ digging the floor out from under you. The mod is confirmed to load cleanly in a 
 - [ ] Dead-man's switch: tap W → "forward key"; nudge the mouse → "mouse look"; open inventory → "a screen was opened"; left-click → "attack button"
 - [ ] Auto-walk carries you into the room as the near slices open
 - [ ] Floors: you end one block lower inside the room, never fall further, never suffocate
-- [ ] Gravel above the ceiling → the framing watcher backfills anything it knocks out
+- [ ] Carve a room that breaks into a cave → the missing corners get filled with cobblestone (have some on you)
+- [ ] No cobblestone on you → it reports the gap count and skips repair instead of hanging
+- [ ] Carve the ceiling out under a gravel/sand deposit → it waits, re-mines what falls, and ends clean
 - [ ] Put obsidian in the path with a stone pickaxe → job pauses, then aborts naming the block, obsidian intact
 - [ ] Let a pickaxe break mid-job → your replacement mod swaps in and the job carries on
 - [ ] `/mallroom preview spine ceiling 4 floor 3` lists both surfaces with the item and count in each slot

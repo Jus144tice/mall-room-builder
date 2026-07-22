@@ -115,6 +115,13 @@ public final class Config {
                     "Ticks between framing integrity scans. Cheap -- a few dozen block reads.")
             .defineInRange("framingScanInterval", 20, 1, 200);
 
+    public static final ModConfigSpec.IntValue GRAVEL_SETTLE_TICKS = BUILDER.comment(
+                    "Ticks of stability -- no falling blocks and no un-mined cells -- required before",
+                    "carving is declared done. This is what stops gravel or sand that pours into the",
+                    "room after the last block is broken from being left behind: the engine waits for",
+                    "it to land, re-mines it, and only finishes once the volume stays clear.")
+            .defineInRange("gravelSettleTicks", 10, 0, 200);
+
     public static final ModConfigSpec.IntValue PLACE_COOLDOWN_TICKS = BUILDER.comment(
                     "Ticks between backfill placements. 4 matches vanilla's held-use cadence.")
             .defineInRange("placeCooldownTicks", 4, 0, 20);
@@ -277,6 +284,10 @@ public final class Config {
 
     public static int framingScanInterval() {
         return safeGet(FRAMING_SCAN_INTERVAL, 20);
+    }
+
+    public static int gravelSettleTicks() {
+        return safeGet(GRAVEL_SETTLE_TICKS, 10);
     }
 
     public static int placeCooldownTicks() {

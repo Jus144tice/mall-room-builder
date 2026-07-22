@@ -13,9 +13,13 @@ block of the job** (`MallAnchor.START_OFFSET` = 1). Nothing is read from the wor
 makes a partial job resumable — same standing block, same volume, every time.
 
 - **Carving is the default; filling is opt-in.** A room is 250 blocks of mining and a job places
-  nothing unless the command named a surface and a hotbar slot. When it does, a fill phase runs after
-  the carve, taking each surface's material from its assigned slot. `/mallroom fill` skips carving
-  entirely, for finishing something already dug. Framing that goes missing is backfilled regardless.
+  nothing into the recesses unless the command named a surface and a hotbar slot. When it does, a
+  fill phase runs after the carve, taking each surface's material from its assigned slot.
+  `/mallroom fill` skips carving entirely, for finishing something already dug.
+- **The shell is made whole automatically.** Carving waits for falling gravel/sand to settle and
+  re-mines it, then a repair phase fills any framing gap (usually where the carve broke into a cave)
+  with cobblestone. Those two are the shell's self-healing; they run on every carve job regardless of
+  fill.
 - **Topology:** a spine hallway with rooms budding off it perpendicular, on both sides, shoulder to
   shoulder. A room's whole hallway-facing side is **open**; the pillars framing each opening are the
   corridor wall, present between rooms and absent where a room is.
@@ -125,14 +129,14 @@ every client tick
   → ClientEvents.onClientTickPost     → JobEngine.tick()
       ARMING  : wait for InputWatch.allReleased(), then arm() latches look baseline,
                 selectBestTool(), latchMiningSlot()
-      CARVING : InputWatch.tripped()? → abort
-                watchFraming()        → queue any framing gone to air
+      CARVING : InputWatch.tripped()? → abort;  reconcileToolSwap()
                 target air yet?       → cursor.complete()
-                tryBackfill()         → only between blocks, never mid-break
-                back on the mining slot? → else swap back and skip the tick
+                canHarvest()?         → else pause (wrong tool), then abort after toolGraceTicks
                 cursor.select(canCarve) → MineDriver.drive()  (continueDestroyBlock + swing)
                 nothing in reach      → retireAlreadyCarved(), then AutoWalk.steerTo(cursor.peek())
-                queue empty           → verifyCarve() → finish()
+                queue empty           → verifyCarve() && carveSettled() → afterCarve()
+      REPAIRING: place cobble into each framing gap; walk to out-of-reach ones → afterRepair()
+      FILLING : place each surface's material from its assigned slot (see fill section)
 
 every movement update
   → AutoWalk.onMovementInput          writes Input.forwardImpulse / leftImpulse / up / jumping
@@ -148,8 +152,18 @@ every movement update
   block; that broke the moment a room was half-carved, because the scan sailed through the opening
   and anchored the room somewhere else. Determinism is what makes resuming work — do not reintroduce
   world-dependent anchoring.
-- **Progress is re-derived from the world, never assumed.** Carved iff `isAir()`. One verify sweep
-  then recovers from server rejections, falling gravel, other players' blocks, and unloaded chunks.
+- **Progress is re-derived from the world, never assumed.** Carved iff `isAir()`; a framing gap iff
+  the cell `canBeReplaced()`; a fill target likewise. This one choice is what lets `verifyCarve`,
+  `carveSettled`, the repair scan, and the fill scan all recover from server rejections, falling
+  gravel, other players' blocks, and unloaded chunks without special-casing any of them.
+- **CARVING does not finish while blocks are falling.** `carveSettled` returns false whenever a
+  `FallingBlockEntity` sits in or above `carveBox`, and requires `gravelSettleTicks` of quiet after
+  the last one lands. `verifyCarve` re-queues whatever the gravel became — with **no sweep budget of
+  its own**, because gravel re-mining must not compete with the unreachable-cell bound that
+  `steerOrStall` owns.
+- **REPAIRING is a phase, not opportunistic.** Framing backfill used to run between carve blocks and
+  was abandoned at job end, so gaps that ended up out of reach were never filled. It is now its own
+  phase that steers to each gap. Do not fold it back into the carve tick.
 - **Reach uses `canInteractWithBlock(pos, 0.0)`** — the server admits `1.0`, so ours is strictly
   tighter and can never send a rejected action.
 - **Never mine a block the held tool cannot harvest.** `tickCarving` gates on
@@ -191,7 +205,7 @@ every movement update
 | [MallAnchor.java](src/main/java/com/jus144tice/mallroombuilder/core/MallAnchor.java) | **`START_OFFSET`** (1); record `(playerFeet, facing)`; `of`, `facedRoom()`, `oppositeRoom(spec)`, **`spineStart()`**, `floorPlateY`, `ceilingPlateY`, `cell`, `alongOf`, `sideOf` | Where the job goes, from position and facing alone. `facedRoom()` and `spineStart()` return the same frame — both begin at the next block ahead. |
 | [SpineGeometry.java](src/main/java/com/jus144tice/mallroombuilder/core/SpineGeometry.java) | `DEFAULT_LENGTH` (7), `RADIUS` (1), `WIDTH` (3), `INTERIOR_HEIGHT` (5), `ENVELOPE_HEIGHT` (7); `interior`, `recesses`, **`carve(start, length, includeRecesses)`**, `cellCount(length, includeRecesses)` | A plain corridor box: floor and ceiling recesses like a room's, but no side recesses and no framing. |
 | [RoomGeometry.java](src/main/java/com/jus144tice/mallroombuilder/core/RoomGeometry.java) | `INTERIOR_SIZE` (5), `INTERIOR_RADIUS` (2), `ENVELOPE_RADIUS` (3), `BACK_PLATE_DEPTH` (5); **`extremeCount(d,s,dy)`**; `interior`, `faceRecesses`, `framing`, `envelope`, **`carve(room, includeRecesses)`** | **The whole framing rule is `extremeCount`.** `carve` is the rough/finish switch: interior alone, or interior plus the five face recesses. |
-| [MallLayout.java](src/main/java/com/jus144tice/mallroombuilder/core/MallLayout.java) | ctor (branches on `spec.kind()` and `spec.carve()`); `carve()`, `framing()`, **`surface(Surface)`**, `surfaceCount`, `counts()`, **`mineOrder()`**, **`fillOrder()`**; private `addRoom`, `addSpine`, `keyFor`, `depthOf`; records `SortKey`, **`FillCell`** | **The composer and single source of truth.** `mineOrder` and `fillOrder` are the two work queues. A fill-only job still populates `framing()` so the backfill watcher has something to protect. |
+| [MallLayout.java](src/main/java/com/jus144tice/mallroombuilder/core/MallLayout.java) | ctor (branches on `spec.kind()` and `spec.carve()`); `carve()`, `framing()`, **`surface(Surface)`**, `surfaceCount`, `counts()`, **`mineOrder()`**, **`fillOrder()`**; private `addRoom`, `addSpine`, `keyFor`, `depthOf`; records `SortKey`, **`FillCell`** | **The composer and single source of truth.** `mineOrder`, `fillOrder`, and `framing()` are the three work sets the engine's three placing/mining phases consume. |
 | [MallCounts.java](src/main/java/com/jus144tice/mallroombuilder/core/MallCounts.java) | record `(carvedCount, framingCount)`; `minedTotal()`, `envelopeTotal()` | `minedTotal == carvedCount` because nothing is ever placed. |
 | [QueueCursor.java](src/main/java/com/jus144tice/mallroombuilder/core/QueueCursor.java) | `select`, `peek`, `complete`, `defer`, `requeue`, `sweep`, `outstanding`, `done/remaining/total`, `sweepsUsed`, `deferredCount` | Ordered work list with a deferral tail and a bounded sweep counter. Completion is always the caller's call against the world. |
 | [WalkVector.java](src/main/java/com/jus144tice/mallroombuilder/core/WalkVector.java) | record `(forward,left,jump)`, `STILL`, `toward(...)`, `isMoving()` | Inverts `Entity.getInputVector`'s rotation. Round-tripped against a reimplementation in the tests. |
@@ -200,9 +214,9 @@ every movement update
 
 | File | Symbols | Purpose |
 |---|---|---|
-| [JobEngine.java](src/main/java/com/jus144tice/mallroombuilder/client/JobEngine.java) | `INSTANCE`; `State` (IDLE/ARMING/CARVING); `start`, `abort`, `finish`, `clear`, `tick`, `tickArming`, `tickCarving`, `selectCarveTarget`, `canCarve`, `verifyCarve`, **`watchFraming`**, **`tryBackfill`**, `steerOrStall`, **`retireAlreadyCarved`**, **`reconcileToolSwap`**, **`beginFillOrFinish`**, **`tickFilling`**, **`blockFor`**, `pauseForMaterial`, `resume`, `pendingFillCount`, `safetyGate`, `touchesLiquid`, `checkLoaded`, **`anchorFor`**, `statusLine`, `progressLine`; fields `wrongToolTicks`, `fillQueue`, `filled`, `pausedSurface` | **The state machine.** `selectCarveTarget` holds the pedestal rule (skip the block underfoot until `stepOffTimeoutTicks`). `anchorFor` is position + facing only, and static so `MallCommand.preview` shares it. |
+| [JobEngine.java](src/main/java/com/jus144tice/mallroombuilder/client/JobEngine.java) | `INSTANCE`; `State` (IDLE/ARMING/CARVING/**REPAIRING**/FILLING/PAUSED_NO_MATERIAL); `start`, `abort`, `finish`, `clear`, `boundingBox`, `tick`, `tickArming`, `tickCarving`, `selectCarveTarget`, `canCarve`, `verifyCarve`, **`carveSettled`**, **`fallingBlocksPresent`**, **`afterCarve`**, **`tickRepairing`**, **`afterRepair`**, `nearest`, `steerOrStall`, `retireAlreadyCarved`, `reconcileToolSwap`, `beginFillOrFinish`, `tickFilling`, `blockFor`, `pauseForMaterial`, `resume`, `pendingFillCount`, `safetyGate`, `touchesLiquid`, `checkLoaded`, **`anchorFor`**, `statusLine`, `progressLine`; fields `carveBox`, `settleTicks`, `repairStallTicks`, `backfill` | **The state machine.** `carveSettled` is the gravel wait; `afterCarve`→`tickRepairing` fills framing gaps; the `backfill` set is the gap queue. `anchorFor` is position + facing only, static so `MallCommand.preview` shares it. |
 | [MineDriver.java](src/main/java/com/jus144tice/mallroombuilder/client/MineDriver.java) | `toBlockPos`, `inReach`, `isCarved`, **`canHarvest`**, `blockName`, `faceFromEye`, `drive`, `cancel` | `drive` is one `continueDestroyBlock` + `swing` per tick — that call self-starts, self-paces and self-completes, so there is no per-block state machine. `canHarvest` uses the position-sensitive NeoForge overload. |
-| [PlaceDriver.java](src/main/java/com/jus144tice/mallroombuilder/client/PlaceDriver.java) | record `Support(pos, face)` + `hitVec()`; `isPlaceable`, `findSupport`, `place(mc, player, support, hand)` | Used **only** for framing backfill. Synthesizes a `BlockHitResult` on a neighbour's face and calls `useItemOn` — the `LineLockManager.tryReacharound` technique. |
+| [PlaceDriver.java](src/main/java/com/jus144tice/mallroombuilder/client/PlaceDriver.java) | record `Support(pos, face)` + `hitVec()`; `isPlaceable`, `findSupport`, `place(mc, player, support, hand)` | Every block the mod places — framing repair and recess fill both. Synthesizes a `BlockHitResult` on a neighbour's face and calls `useItemOn` — the `LineLockManager.tryReacharound` technique. |
 | [AutoWalk.java](src/main/java/com/jus144tice/mallroombuilder/client/AutoWalk.java) | `steerTo`, `stop`, `isSteering`, `tick`, `desiredWalk`, `wantsJump`, `onMovementInput` | Writes `Input`'s impulse and boolean fields from `MovementInputUpdateEvent`. Set the booleans too — `LocalPlayer` reads them after the event for sprint/jump. |
 | [InputWatch.java](src/main/java/com/jus144tice/mallroombuilder/client/InputWatch.java) | `watched`, `allReleased`, `arm`, `setExpectedSlot`, `expectedSlot`, `tripped`, `trippedKey`, `angleDelta` | The dead-man's switch. Trustworthy because the engine writes `Input` fields directly and **never** touches `KeyMapping` state, so `key*.isDown()` is never reading back our own writes. |
 | [HotbarSelector.java](src/main/java/com/jus144tice/mallroombuilder/client/HotbarSelector.java) | `backfillItem`, `backfillBlock`, `remember`, `miningSlot`, `latchMiningSlot`, `onMiningSlot`, `selectMiningSlot`, **`backfillHand`**, `selectBackfillSlot`, `selectBestTool`, `restore`, `forget` | `backfillHand` checks the off hand first-class: a player keeping cobblestone there never triggers a hotbar swap, so backfill can never disturb a break. |
@@ -273,5 +287,8 @@ README, and keep it honest.
 - **A partial job is finished by re-running it from the same block.** That only holds because the
   anchor is world-independent; `MallLayoutTest.theSameStandingSpotAlwaysDescribesTheSameVolume` is
   the assertion protecting it.
+- **The settle wait and the repair phase are not unit-tested** — both need a live client
+  (`FallingBlockEntity`, world placement). The geometry they scan (`carve()`, `framing()`) is
+  covered; the tick logic is not. Verify them in game; see the README checklist.
 - **In-game behaviour is unverified.** The build is green and the mod loads, but nobody has played a
   job through end to end. Update the README checklist as items are confirmed.

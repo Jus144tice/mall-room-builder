@@ -4,6 +4,27 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] — 2026-07-21
+
+### Added
+
+- **Gravel and sand settle handling.** Carving the ceiling out from under a deposit used to leave the
+  pile behind: at the instant the last block broke, the falling material was still in-flight entities,
+  so the volume read clean and the job finished before it landed. Carving now waits while any
+  `FallingBlockEntity` sits in or above the volume, re-mines what lands, and only finishes once the
+  space has stayed clear for `gravelSettleTicks` (default 10). A tall column just takes a few passes.
+- **Framing repair is now a real phase.** When a carve breaks into a cave, the corners that would
+  normally be solid stone are open air. The mod fills those with cobblestone — but the old
+  opportunistic backfill only ran between mining blocks and was abandoned at job end, so any gap that
+  ended up out of reach was never filled. It is now a dedicated phase after carving that **walks to
+  each gap**. If you have no cobblestone it reports the count and skips rather than hanging.
+- `gravelSettleTicks` config key. New `REPAIRING` job state, shown in `/mallroom status` and the HUD.
+
+### Changed
+
+- `verifyCarve` no longer has its own sweep budget — gravel re-mining must not compete with the
+  bound on genuinely-unreachable cells, which `steerOrStall` already owns.
+
 ## [0.6.0] — 2026-07-20
 
 ### Added

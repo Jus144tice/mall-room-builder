@@ -26,29 +26,36 @@ import net.minecraft.core.Direction;
 import net.minecraft.network.chat.Component;
 import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.entity.item.FallingBlockEntity;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.AABB;
 
 /**
  * The job state machine. Owns every world read and write.
  *
  * <pre>
- *   IDLE -&gt; ARMING -&gt; CARVING -&gt; FILLING -&gt; IDLE
- *                        |           ^
- *                        |           v
- *                        |    PAUSED_NO_MATERIAL
- *                        +--&gt; IDLE   (nothing to fill)
+ *   IDLE -&gt; ARMING -&gt; CARVING -&gt; REPAIRING -&gt; FILLING -&gt; IDLE
+ *                                              ^   v
+ *                                       PAUSED_NO_MATERIAL
  *   any state -&gt; IDLE on abort
  * </pre>
  *
  * <p><strong>Carving is the default; filling is opt-in.</strong> A room is 250 blocks of mining and
- * a job places nothing unless the command named a surface and a hotbar slot. When it does, the fill
- * phase runs after the carve, taking each surface's material from its assigned slot. A fill-only job
- * skips carving entirely, for finishing something already dug.</p>
+ * a job places nothing into the recesses unless the command named a surface and a hotbar slot. When
+ * it does, the fill phase runs after the carve, taking each surface's material from its assigned
+ * slot. A fill-only job skips carving entirely, for finishing something already dug.</p>
  *
- * <p>The one placement that happens regardless is a backfill into framing that has gone missing.</p>
+ * <p><strong>CARVING waits for gravel to settle</strong> before it declares done — see
+ * {@link #carveSettled} — so sand or gravel that pours in after the last block is re-mined rather
+ * than left behind.</p>
+ *
+ * <p><strong>REPAIRING backfills framing gaps.</strong> The mod never mines framing, but a carve
+ * that breaks into a cave leaves its corners as open air. This phase walks to every such gap and
+ * fills it with cobblestone — the one and only reason the mod places a block into the shell.</p>
  *
  * <p><strong>Why ARMING exists.</strong> The player pressed Enter to send the command, so the chat
  * screen is closing and keys are frequently still down. Starting immediately would trip the
@@ -63,10 +70,14 @@ public final class JobEngine {
 
     public static final JobEngine INSTANCE = new JobEngine();
 
+    /** Blocks above the carve volume to scan for in-flight gravel/sand. */
+    private static final int FALLING_SEARCH_UP = 16;
+
     public enum State {
         IDLE,
         ARMING,
         CARVING,
+        REPAIRING,
         FILLING,
         PAUSED_NO_MATERIAL
     }
@@ -78,14 +89,15 @@ public final class JobEngine {
 
     private final Set<GridPos> backfill = new LinkedHashSet<>();
     private final List<MallLayout.FillCell> fillQueue = new ArrayList<>();
+    private AABB carveBox;
     private int filled;
     private int fillStallTicks;
+    private int repairStallTicks;
+    private int settleTicks;
     private Surface pausedSurface;
     private int blockTicks;
     private int armTicks;
     private int stepOffTicks;
-    private int verifySweeps;
-    private int framingScanTicks;
     private int placeCooldown;
     private int wrongToolTicks;
     private int carved;
@@ -140,10 +152,13 @@ public final class JobEngine {
 
         this.layout = candidate;
         this.cursor = new QueueCursor(spec.carve() ? candidate.mineOrder() : List.of(), Config.maxVerifySweeps());
+        this.carveBox = boundingBox(candidate.carve());
         this.fillQueue.clear();
         this.fillQueue.addAll(candidate.fillOrder());
         this.filled = 0;
         this.fillStallTicks = 0;
+        this.repairStallTicks = 0;
+        this.settleTicks = 0;
         this.pausedSurface = null;
         this.state = State.ARMING;
         this.currentTarget = null;
@@ -151,8 +166,6 @@ public final class JobEngine {
         this.blockTicks = 0;
         this.armTicks = 0;
         this.stepOffTicks = 0;
-        this.verifySweeps = 0;
-        this.framingScanTicks = 0;
         this.placeCooldown = 0;
         this.wrongToolTicks = 0;
         this.carved = 0;
@@ -214,7 +227,7 @@ public final class JobEngine {
         }
         int leftoverCarve = cursor == null ? 0 : cursor.remaining();
         int leftoverFill = level == null ? 0 : pendingFillCount(level);
-        int leftover = leftoverCarve + leftoverFill;
+        int leftover = leftoverCarve + leftoverFill + backfill.size();
         if (leftover > 0) {
             say(
                     mc,
@@ -232,9 +245,33 @@ public final class JobEngine {
         currentTarget = null;
         layout = null;
         cursor = null;
+        carveBox = null;
         backfill.clear();
         fillQueue.clear();
         pausedSurface = null;
+        settleTicks = 0;
+    }
+
+    /** Smallest box enclosing every carve cell, or a unit box at origin when there is nothing to carve. */
+    private static AABB boundingBox(Set<GridPos> cells) {
+        if (cells.isEmpty()) {
+            return new AABB(0, 0, 0, 0, 0, 0);
+        }
+        int minX = Integer.MAX_VALUE;
+        int minY = Integer.MAX_VALUE;
+        int minZ = Integer.MAX_VALUE;
+        int maxX = Integer.MIN_VALUE;
+        int maxY = Integer.MIN_VALUE;
+        int maxZ = Integer.MIN_VALUE;
+        for (GridPos p : cells) {
+            minX = Math.min(minX, p.x());
+            minY = Math.min(minY, p.y());
+            minZ = Math.min(minZ, p.z());
+            maxX = Math.max(maxX, p.x());
+            maxY = Math.max(maxY, p.y());
+            maxZ = Math.max(maxZ, p.z());
+        }
+        return new AABB(minX, minY, minZ, maxX + 1, maxY + 1, maxZ + 1);
     }
 
     // --- The tick ----------------------------------------------------------
@@ -273,6 +310,7 @@ public final class JobEngine {
         AutoWalk.tick(player);
         switch (state) {
             case CARVING -> tickCarving(mc, player, level);
+            case REPAIRING -> tickRepairing(mc, player, level);
             case FILLING, PAUSED_NO_MATERIAL -> tickFilling(mc, player, level);
             default -> {}
         }
@@ -303,11 +341,6 @@ public final class JobEngine {
     // --- Carving -----------------------------------------------------------
 
     private void tickCarving(Minecraft mc, LocalPlayer player, ClientLevel level) {
-        if (placeCooldown > 0) {
-            placeCooldown--;
-        }
-        watchFraming(level);
-
         // Completion is a world read, not a bookkeeping assumption.
         if (currentTarget != null && MineDriver.isCarved(level, MineDriver.toBlockPos(currentTarget))) {
             cursor.complete(currentTarget);
@@ -316,29 +349,21 @@ public final class JobEngine {
             blockTicks = 0;
         }
 
-        // Backfill only ever happens between blocks. Swapping hotbar slots mid-break would reset
-        // destroy progress, so this must never run while a break is in flight.
-        if (currentTarget == null && tryBackfill(mc, player, level)) {
-            return;
-        }
-
         if (currentTarget == null) {
-            // A backfill may have left us holding cobblestone; get the pickaxe back before mining.
-            if (!HotbarSelector.onMiningSlot(player)) {
-                HotbarSelector.selectMiningSlot(player);
-                return;
-            }
             currentTarget = selectCarveTarget(player, level);
             blockTicks = 0;
         }
 
         if (currentTarget == null) {
             if (!cursor.hasPending() && !cursor.hasDeferred()) {
-                if (verifyCarve(level)) {
-                    beginFillOrFinish(mc);
+                // The queue is empty, but gravel may still be pouring in. Only leave the carve phase
+                // once the volume has stayed clear for a stable window (see carveSettled).
+                if (verifyCarve(level) && carveSettled(level)) {
+                    afterCarve(mc, player, level);
                 }
                 return;
             }
+            settleTicks = 0;
             steerOrStall(mc);
             return;
         }
@@ -416,7 +441,16 @@ public final class JobEngine {
         return !touchesLiquid(level, pos);
     }
 
-    /** Re-scans the whole volume. @return true when nothing is left to carve. */
+    /**
+     * Re-scans the whole volume and re-queues anything that is not air.
+     *
+     * <p>No sweep budget of its own: gravel pouring in needs re-mining as many times as it takes,
+     * and that must not compete with the bound on <em>unreachable</em> cells. Cells re-queued here go
+     * back through the normal carve loop, so a cell that is genuinely out of reach is bounded there by
+     * {@code steerOrStall}'s sweep. Reachable dirt (landed gravel) simply gets mined again.</p>
+     *
+     * @return true when the volume is fully air right now
+     */
     private boolean verifyCarve(ClientLevel level) {
         List<GridPos> unfinished = new ArrayList<>();
         for (GridPos p : layout.carve()) {
@@ -427,64 +461,122 @@ public final class JobEngine {
         if (unfinished.isEmpty()) {
             return true;
         }
-        if (verifySweeps >= Config.maxVerifySweeps()) {
-            MallRoomBuilder.debug("carve verify gave up with " + unfinished.size() + " left");
-            return true;
-        }
-        verifySweeps++;
         cursor.requeue(unfinished);
-        MallRoomBuilder.debug("carve sweep " + verifySweeps + ": " + unfinished.size() + " cells re-queued");
+        settleTicks = 0;
+        MallRoomBuilder.debug("carve re-scan: " + unfinished.size() + " cells re-queued");
         return false;
     }
 
-    // --- Framing backfill --------------------------------------------------
+    /**
+     * Holds the carve phase open until the volume has stayed clear for a stable window.
+     *
+     * <p>Called only once {@code verifyCarve} reports the volume air. The danger it guards is gravel
+     * or sand that pours in <em>after</em> the last block breaks: at the instant the queue empties the
+     * falling blocks are still entities, not blocks, so the volume reads clean. Waiting for those
+     * entities to land — and for a short quiet spell afterwards — lets the next {@code verifyCarve}
+     * catch what they became and re-mine it. The loop converges because the falling source is
+     * finite.</p>
+     *
+     * @return true when nothing is falling and the volume has been clear for {@code gravelSettleTicks}
+     */
+    private boolean carveSettled(ClientLevel level) {
+        if (carveBox != null && fallingBlocksPresent(level)) {
+            settleTicks = 0;
+            AutoWalk.stop();
+            return false;
+        }
+        return ++settleTicks >= Config.gravelSettleTicks();
+    }
+
+    /** True if any block is mid-fall inside the carve volume or the column above it. */
+    private boolean fallingBlocksPresent(ClientLevel level) {
+        // Search up beyond the ceiling: gravel stacked above pours in one block at a time.
+        AABB search = carveBox.inflate(1.0, 0.0, 1.0).expandTowards(0.0, FALLING_SEARCH_UP, 0.0);
+        return !level.getEntitiesOfClass(FallingBlockEntity.class, search).isEmpty();
+    }
+
+    // --- Framing repair ----------------------------------------------------
 
     /**
-     * Periodically checks that the framing is still standing.
+     * Advances past a finished carve: repair the framing if it has gaps, otherwise fill or finish.
      *
-     * <p>The mod never mines framing, but gravel falls, mobs happen, and a stray break happens. This
-     * is the one thing that ever puts a block back, and it is exactly the case the player described:
-     * cobblestone is only for repairing framing that went missing.</p>
+     * <p>A "gap" is any framing cell that is not solid — most often because the carve broke into a
+     * cave and the corner was open air to begin with, exactly the case in the field report. The mod
+     * never mines framing, so cobblestone here only ever <em>replaces</em> what is missing.</p>
      */
-    private void watchFraming(ClientLevel level) {
-        if (!Config.autoBackfillFraming() || layout == null) {
-            return;
-        }
-        if (++framingScanTicks < Config.framingScanInterval()) {
-            return;
-        }
-        framingScanTicks = 0;
-        for (GridPos p : layout.framing()) {
-            BlockPos pos = MineDriver.toBlockPos(p);
-            if (level.isLoaded(pos) && level.getBlockState(pos).isAir()) {
-                if (backfill.add(p)) {
-                    MallRoomBuilder.debug("framing breach at " + p);
+    private void afterCarve(Minecraft mc, LocalPlayer player, ClientLevel level) {
+        MineDriver.cancel(mc);
+        AutoWalk.stop();
+
+        if (Config.autoBackfillFraming()) {
+            backfill.clear();
+            for (GridPos p : layout.framing()) {
+                BlockPos pos = MineDriver.toBlockPos(p);
+                if (level.isLoaded(pos) && level.getBlockState(pos).canBeReplaced()) {
+                    backfill.add(p);
                 }
             }
+            if (!backfill.isEmpty()) {
+                state = State.REPAIRING;
+                repairStallTicks = 0;
+                say(
+                        mc,
+                        ChatFormatting.GRAY,
+                        "Carved " + carved + ". Repairing " + backfill.size() + " framing gap(s).");
+                return;
+            }
         }
+        afterRepair(mc);
     }
 
     /**
-     * Places one backfill block if anything is missing and reachable.
+     * The framing-repair phase: walk to each gap and place cobblestone against a solid neighbour.
      *
-     * @return true if this tick was consumed by backfill work
+     * <p>Unlike the old opportunistic backfill this is a phase of its own, so it can steer to gaps
+     * that are out of reach instead of abandoning them. It places any gap that currently has support;
+     * as each block lands, its neighbours gain support, so a run of corner cells fills outward from
+     * the solid rock the framing is anchored to.</p>
      */
-    private boolean tryBackfill(Minecraft mc, LocalPlayer player, ClientLevel level) {
-        if (backfill.isEmpty() || placeCooldown > 0) {
-            return false;
+    private void tickRepairing(Minecraft mc, LocalPlayer player, ClientLevel level) {
+        if (placeCooldown > 0) {
+            placeCooldown--;
+            return;
         }
 
-        var buildState = HotbarSelector.backfillBlock().defaultBlockState();
+        // Drop gaps that are no longer open (just placed, or filled by settling gravel).
+        backfill.removeIf(p -> {
+            BlockPos pos = MineDriver.toBlockPos(p);
+            return level.isLoaded(pos) && !level.getBlockState(pos).canBeReplaced();
+        });
+        if (backfill.isEmpty()) {
+            afterRepair(mc);
+            return;
+        }
+
+        // Get cobblestone in hand. If the player has none, say so and move on rather than hanging.
+        InteractionHand hand = HotbarSelector.backfillHand(player);
+        if (hand == null) {
+            if (!HotbarSelector.selectBackfillSlot(player)) {
+                if (!warnedNoBackfillMaterial) {
+                    warnedNoBackfillMaterial = true;
+                    say(
+                            mc,
+                            ChatFormatting.YELLOW,
+                            backfill.size() + " framing gap(s) but no " + Config.backfillBlock()
+                                    + " to repair them with — skipping.");
+                }
+                afterRepair(mc);
+                return;
+            }
+            return; // let the swap settle a tick before placing
+        }
+
+        BlockState cobble = HotbarSelector.backfillBlock().defaultBlockState();
         GridPos target = null;
         PlaceDriver.Support support = null;
         for (GridPos p : backfill) {
             BlockPos pos = MineDriver.toBlockPos(p);
-            if (!level.getBlockState(pos).isAir()) {
-                target = p; // already fixed itself
-                support = null;
-                break;
-            }
-            if (!PlaceDriver.isPlaceable(level, player, pos, buildState)) {
+            if (!PlaceDriver.isPlaceable(level, player, pos, cobble)) {
                 continue;
             }
             PlaceDriver.Support candidate = PlaceDriver.findSupport(player, level, pos);
@@ -494,37 +586,49 @@ public final class JobEngine {
                 break;
             }
         }
+
         if (target == null) {
-            return false;
-        }
-        if (support == null) {
-            backfill.remove(target);
-            return false;
-        }
-
-        InteractionHand hand = HotbarSelector.backfillHand(player);
-        if (hand == null) {
-            if (!HotbarSelector.selectBackfillSlot(player)) {
-                if (!warnedNoBackfillMaterial) {
-                    warnedNoBackfillMaterial = true;
-                    say(
-                            mc,
-                            ChatFormatting.YELLOW,
-                            "Framing is missing but you have no " + Config.backfillBlock() + " to repair it with.");
+            // Nothing reachable and supported from here: walk to the nearest gap.
+            GridPos next = nearest(player, backfill);
+            if (next != null && Config.autoWalkEnabled()) {
+                AutoWalk.steerTo(next);
+                if (++repairStallTicks > Config.blockTimeoutTicks()) {
+                    MallRoomBuilder.debug("repair stalled with " + backfill.size() + " gap(s) left");
+                    AutoWalk.stop();
+                    afterRepair(mc);
                 }
-                backfill.clear();
-                return false;
+                return;
             }
-            return true; // slot switched this tick; place on the next one
+            afterRepair(mc);
+            return;
         }
 
+        AutoWalk.stop();
+        repairStallTicks = 0;
         if (PlaceDriver.place(mc, player, support, hand)) {
             backfill.remove(target);
             backfilled++;
             placeCooldown = Config.placeCooldownTicks();
-            MallRoomBuilder.debug("backfilled framing at " + target);
+            MallRoomBuilder.debug("repaired framing at " + target);
         }
-        return true;
+    }
+
+    private void afterRepair(Minecraft mc) {
+        beginFillOrFinish(mc);
+    }
+
+    /** The nearest cell in a set to the player's eye, for steering. */
+    private static GridPos nearest(LocalPlayer player, Set<GridPos> cells) {
+        GridPos best = null;
+        double bestDistance = Double.MAX_VALUE;
+        for (GridPos p : cells) {
+            double d = player.getEyePosition().distanceToSqr(p.x() + 0.5, p.y() + 0.5, p.z() + 0.5);
+            if (d < bestDistance) {
+                bestDistance = d;
+                best = p;
+            }
+        }
+        return best;
     }
 
     // --- Shared helpers ----------------------------------------------------
@@ -551,21 +655,24 @@ public final class JobEngine {
 
         MallRoomBuilder.debug("sweep budget exhausted with " + cursor.remaining() + " outstanding");
         AutoWalk.stop();
-        beginFillOrFinish(mc);
+        // Unreachable carve cells are given up on, but the framing may still want repairing.
+        LocalPlayer player = mc.player;
+        if (state == State.CARVING && player != null && mc.level != null) {
+            afterCarve(mc, player, mc.level);
+        } else {
+            beginFillOrFinish(mc);
+        }
     }
 
     // --- Filling -----------------------------------------------------------
 
     private void beginFillOrFinish(Minecraft mc) {
-        if (state == State.CARVING && layout != null && layout.spec().fills()) {
+        if (layout != null && layout.spec().fills()) {
             MineDriver.cancel(mc);
             AutoWalk.stop();
             state = State.FILLING;
             fillStallTicks = 0;
-            say(
-                    mc,
-                    ChatFormatting.GRAY,
-                    "Carved " + carved + ". Filling " + layout.counts().placedTotal() + ".");
+            say(mc, ChatFormatting.GRAY, "Filling " + layout.counts().placedTotal() + ".");
             return;
         }
         finish(mc);
@@ -584,7 +691,6 @@ public final class JobEngine {
      * anyway, since carving is done.</p>
      */
     private void tickFilling(Minecraft mc, LocalPlayer player, ClientLevel level) {
-        watchFraming(level);
         if (placeCooldown > 0) {
             placeCooldown--;
             return;
@@ -822,7 +928,8 @@ public final class JobEngine {
             case ARMING -> "waiting for you to release all keys";
             case CARVING -> wrongToolTicks > 0
                     ? "waiting for a tool that can harvest this block"
-                    : "carving " + queueFraction();
+                    : settleTicks > 0 ? "waiting for falling blocks to settle" : "carving " + queueFraction();
+            case REPAIRING -> "repairing framing (" + backfill.size() + " gap(s) left)";
             case FILLING -> "filling " + filled + "/"
                     + (layout == null ? 0 : layout.counts().placedTotal());
             case PAUSED_NO_MATERIAL -> "paused: out of material for the "

@@ -51,6 +51,7 @@ class ConfigTest {
         assertEquals(20000, Config.MAX_QUEUED_BLOCKS.getDefault());
         assertEquals("minecraft:cobblestone", Config.BACKFILL_BLOCK.getDefault());
         assertEquals(20, Config.FRAMING_SCAN_INTERVAL.getDefault());
+        assertEquals(10, Config.GRAVEL_SETTLE_TICKS.getDefault());
         assertEquals(6.0, Config.MIN_HEALTH.getDefault());
     }
 
@@ -87,6 +88,7 @@ class ConfigTest {
         assertTrue(Config.autoBackfillFraming());
         assertEquals("minecraft:cobblestone", Config.backfillBlock());
         assertEquals(20, Config.framingScanInterval());
+        assertEquals(10, Config.gravelSettleTicks());
         assertEquals(4, Config.placeCooldownTicks());
         assertFalse(Config.autoSelectTool());
         assertTrue(Config.abortOnWrongTool());
